@@ -9,13 +9,15 @@ A plain Enter while Claude works steers the running turn: Claude Code hands the 
 - the queue shows above the prompt; finished and running messages drop off
 - `/qq-edit` moves what is still queued back into the box as `/qq` lines; edit or delete lines and press Enter to queue them again
 - `/qq-clear` drops the queue
-- an interrupted or failed turn pauses the queue; `/qq` on its own resumes it
+- a queued message that starts with a slash command runs as that command: `/qq /compact keep the plan` compacts once everything queued before it has finished, and the next message waits for the compaction. A message led by anything else with a slash, such as a path, is refused; put other text first
+- an interrupted or failed turn, a failed command, or a compaction cancelled with Esc pauses the queue; `/qq` on its own resumes it
 
 One `/qq` can carry several messages: each line that opens with `/qq` starts a new one, and other lines belong to the message above them.
 
 ```
 /qq fix the failing tests
 and run lint after
+/qq /compact
 /qq summarise what changed
 ```
 

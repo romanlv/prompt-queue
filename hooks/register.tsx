@@ -37,6 +37,36 @@ async function syncDraft($: EngineInterface) {
 }
 
 let isSending = false
+// Counts turn starts, so a queued command can tell whether it began a turn (a skill) or not (/compact).
+let turnsStarted = 0
+// Set when a compaction that a queued command started did not stand. /compact cancelled by
+// Esc resolves like one that ran, so only the compaction itself tells them apart.
+let compactFailure: string | undefined
+
+const COMMAND = /^\/([^\s/]+)(?:\s+([\s\S]*))?$/
+
+// A queued item led by a slash command runs as that command. The host refuses a plugin's
+// message that begins with /, so /qq turns away one led by anything else (a path, a typo).
+function asCommand(item: string) {
+  const match = COMMAND.exec(item)
+  if (!match) {
+    return undefined
+  }
+  const [, command = '', args = ''] = match
+
+  return { command, args }
+}
+
+async function unknownCommands($: EngineInterface, messages: string[]) {
+  const known = new Set((await $.command.list()).map(c => c.name))
+
+  return messages.filter(m => m.startsWith('/') && !known.has(asCommand(m)?.command ?? ''))
+}
+
+async function pause($: EngineInterface, why: string) {
+  await update($, isPaused, () => true)
+  $.ui.toast(`/qq: ${why}, so the queue is paused; /qq resumes it`)
+}
 
 // Sends the queue's head once nothing runs; the next goes when that turn has ended.
 async function sendNext($: EngineInterface) {
@@ -44,6 +74,7 @@ async function sendNext($: EngineInterface) {
     return
   }
   isSending = true
+  let run: { command: string; args: string } | undefined
   try {
     const head = (await read($, queue))[0]
     if (head === undefined) {
@@ -51,12 +82,39 @@ async function sendNext($: EngineInterface) {
     }
     await update($, queue, q => q.slice(1))
     await update($, isBusy, () => true)
-    const result = await $.prompt.submit({ text: head, asUser: true })
-    if ('drop' in result) {
-      await update($, isBusy, () => false)
+    run = asCommand(head)
+    if (!run) {
+      const result = await $.prompt.submit({ text: head, asUser: true }).catch(async (error: unknown) => {
+        await pause($, `the message could not be sent (${String(error)})`)
+        return { drop: true }
+      })
+      if ('drop' in result) {
+        await update($, isBusy, () => false)
+      }
     }
   } finally {
     isSending = false
+  }
+  if (run) {
+    await runCommand($, run)
+  }
+}
+
+async function runCommand($: EngineInterface, run: { command: string; args: string }) {
+  const before = turnsStarted
+  compactFailure = undefined
+  try {
+    await $.command.run(run)
+    if (compactFailure !== undefined) {
+      await pause($, `/${run.command} did not finish (${compactFailure})`)
+    }
+  } catch (error) {
+    await pause($, `/${run.command} failed (${String(error)})`)
+  }
+  // A command that started a turn is released by that turn's end instead.
+  if (turnsStarted === before) {
+    await update($, isBusy, () => false)
+    sendLater($)
   }
 }
 
@@ -101,6 +159,12 @@ export const register: Register = on => {
 
       return { text: 'Usage: /qq {message}' }
     }
+    const unknown = await unknownCommands($, messages)
+    if (unknown.length > 0) {
+      const word = unknown[0]?.split(/\s/)[0]
+
+      return { text: `${word} is not a command, so nothing was queued; start the message with other text to send it` }
+    }
     await update($, queue, q => [...q, ...messages])
     sendLater($)
 
@@ -138,7 +202,22 @@ export const register: Register = on => {
     return { text: `Dropped ${items.length} queued message${items.length === 1 ? '' : 's'}` }
   })
 
+  on('session.compact', async ($, e, next) => {
+    try {
+      const result = await next(e)
+      if (result.skip !== undefined) {
+        compactFailure = result.skip
+      }
+
+      return result
+    } catch (error) {
+      compactFailure = String(error)
+      throw error
+    }
+  })
+
   on('turn.start', async ($, e, next) => {
+    turnsStarted++
     await update($, isBusy, () => true)
 
     return next(e)

@@ -7,6 +7,8 @@ type On = Parameters<TestBody>[1]
 function session($: Engine, on: On, box = '') {
   const entered: string[] = []
   const filled: string[] = []
+  const ran: string[] = []
+  const commands = { fail: false, startsTurn: false, compact: 'stands' as 'stands' | 'skipped' }
   on('prompt.submit', (_$, e) => {
     entered.push(e.text)
     return { text: e.text }
@@ -18,6 +20,25 @@ function session($: Engine, on: On, box = '') {
   })
   on('turn.start', (_$, e) => ({ turnId: e.turnId }))
   on('turn.complete', (_$, e) => ({ text: e.answer }))
+  on('command.list', () => ({ value: ['compact', 'review', 'qq', 'qq-edit', 'qq-clear'].map(name => ({ name, description: '', source: 'builtin' })) }) as never)
+  for (const command of ['compact', 'review']) {
+    on('command.run', { command }, async (_$, e) => {
+      ran.push(`/${e.command} ${e.args}`.trim())
+      if (commands.fail) {
+        throw new Error('no')
+      }
+      if (e.command === 'compact') {
+        await $.session.compact({ trigger: 'manual', messages: [{ role: 'user', text: 'hi', toolUses: [] }] } as never).catch(() => undefined)
+      }
+      if (commands.startsTurn) {
+        await turnStart()
+      }
+      return { text: '' }
+    })
+  }
+  on('session.compact', () => {
+    return (commands.compact === 'skipped' ? { skip: 'vetoed' } : { messages: [{ role: 'user', text: 'summary', toolUses: [] }] }) as never
+  })
   const clock = mock.clock(on)
   const qq = async (command: string, args = '') => {
     const out = await $.command.run({ command, args } as never)
@@ -32,7 +53,7 @@ function session($: Engine, on: On, box = '') {
     await $.turn.complete({ answer: '', durationMs: 1, isAborted: reason === 'aborted', turnId: 't', reason } as never)
     await clock.advance(0)
   }
-  return { entered, filled, qq, turnStart, turnEnd }
+  return { entered, filled, ran, commands, qq, turnStart, turnEnd }
 }
 
 test('/qq with nothing running sends at once', async ($, on) => {
@@ -131,6 +152,71 @@ test('an interrupted turn pauses the queue until /qq resumes it', async ($, on) 
   await s.turnStart()
   await s.qq('qq', 'ONE')
   await s.turnEnd('aborted')
+  expect(s.entered).toEqual([])
+  expect((await s.qq('qq')).text).toBe('Queue resumed')
+  expect(s.entered).toEqual(['ONE'])
+})
+
+test('a queued slash command runs as that command in its place in the queue', async ($, on) => {
+  const s = session($, on)
+  await s.turnStart()
+  await s.qq('qq', 'ONE\n/qq /compact keep the plan\n/qq TWO')
+  await s.turnEnd()
+  expect(s.entered).toEqual(['ONE'])
+  expect(s.ran).toEqual([])
+  await s.turnStart()
+  await s.turnEnd()
+  expect(s.ran).toEqual(['/compact keep the plan'])
+  expect(s.entered).toEqual(['ONE', 'TWO'])
+})
+
+test('a slash command with nothing running runs at once', async ($, on) => {
+  const s = session($, on)
+  await s.qq('qq', '/compact')
+  await s.qq('qq', 'ONE')
+  expect(s.ran).toEqual(['/compact'])
+  expect(s.entered).toEqual(['ONE'])
+})
+
+test('a command that starts a turn holds the queue until that turn ends', async ($, on) => {
+  const s = session($, on)
+  s.commands.startsTurn = true
+  await s.qq('qq', '/review\n/qq ONE')
+  expect(s.ran).toEqual(['/review'])
+  expect(s.entered).toEqual([])
+  await s.turnEnd()
+  expect(s.entered).toEqual(['ONE'])
+})
+
+test('a failed command pauses the queue', async ($, on) => {
+  const s = session($, on)
+  s.commands.fail = true
+  await s.turnStart()
+  await s.qq('qq', '/compact\n/qq ONE')
+  await s.turnEnd()
+  expect(s.ran).toEqual(['/compact'])
+  expect(s.entered).toEqual([])
+  expect((await s.qq('qq')).text).toBe('Queue resumed')
+  expect(s.entered).toEqual(['ONE'])
+})
+
+test('a message led by a path or unknown slash word is turned away, queuing nothing', async ($, on) => {
+  const s = session($, on)
+  await s.turnStart()
+  const out = await s.qq('qq', 'ONE\n/qq /tmp/x.log explain it')
+  expect(out.text).toBe('/tmp/x.log is not a command, so nothing was queued; start the message with other text to send it')
+  await s.qq('qq', 'read /tmp/x.log')
+  await s.turnEnd()
+  expect(s.ran).toEqual([])
+  expect(s.entered).toEqual(['read /tmp/x.log'])
+})
+
+// The kit skips a hook that throws, so Esc's aborted compaction is checked live, not here.
+test('a compaction that does not stand pauses the queue', async ($, on) => {
+  const s = session($, on)
+  s.commands.compact = 'skipped'
+  await s.qq('qq', '/compact\n/qq ONE')
+  expect(s.ran).toEqual(['/compact'])
   expect(s.entered).toEqual([])
   expect((await s.qq('qq')).text).toBe('Queue resumed')
   expect(s.entered).toEqual(['ONE'])
