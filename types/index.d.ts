@@ -1,6 +1,6 @@
 declare module 'claude-code' {
   interface PluginState {
-    'msg-queue': {
+    'prompt-queue': {
       isDraft: boolean
       queue: string[]
       isBusy: boolean

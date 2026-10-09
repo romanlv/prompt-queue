@@ -1,15 +1,15 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, PromptDecoration, Register, Timer } from 'claude-code'
 
-const isDraft = atom({ plugin: 'msg-queue', key: 'isDraft' } as const, false)
-const queue = atom({ plugin: 'msg-queue', key: 'queue' } as const, [] as string[])
+const isDraft = atom({ plugin: 'prompt-queue', key: 'isDraft' } as const, false)
+const queue = atom({ plugin: 'prompt-queue', key: 'queue' } as const, [] as string[])
 // From a turn's start, or the mod's own submit, to that turn's end on the main loop.
-const isBusy = atom({ plugin: 'msg-queue', key: 'isBusy' } as const, false)
+const isBusy = atom({ plugin: 'prompt-queue', key: 'isBusy' } as const, false)
 // Set when a turn ends by interruption or error, so Esc stops the chain rather than starting the next item.
-const isPaused = atom({ plugin: 'msg-queue', key: 'isPaused' } as const, false)
+const isPaused = atom({ plugin: 'prompt-queue', key: 'isPaused' } as const, false)
 // The messages >>edit put in the box, held out of the queue until Enter saves the box's
 // version or emptying the box puts them back; null when no edit is open.
-const held = atom({ plugin: 'msg-queue', key: 'held' } as const, null as string[] | null)
+const held = atom({ plugin: 'prompt-queue', key: 'held' } as const, null as string[] | null)
 
 // Each line opening with >> starts a queued message, and the lines below belong to it;
 // >>edit and >>clear are whole prompts of their own.
@@ -98,7 +98,7 @@ async function cancelIfEmpty($: EngineInterface) {
   }
   await update($, queue, q => [...items, ...q])
   await update($, held, () => null)
-  $.ui.toast('msg-queue: Edit cancelled; the queue is as it was')
+  $.ui.toast('prompt-queue: Edit cancelled; the queue is as it was')
   sendLater($)
 }
 
@@ -162,7 +162,7 @@ async function refuseUnknown($: EngineInterface, messages: string[]) {
 
 async function pause($: EngineInterface, why: string) {
   await update($, isPaused, () => true)
-  $.ui.toast(`msg-queue: ${why}, so the queue is paused; >> resumes it`)
+  $.ui.toast(`prompt-queue: ${why}, so the queue is paused; >> resumes it`)
 }
 
 // Sends the queue's head once nothing runs; the next goes when that turn has ended.
@@ -295,7 +295,7 @@ async function act($: EngineInterface, action: string, typed: string) {
   await clearTaken($, typed)
   const text = action === LEADER ? await resume($) : action === `${LEADER}edit` ? await editQueue($) : await clearQueue($)
   if (text !== undefined) {
-    $.ui.toast(`msg-queue: ${text}`)
+    $.ui.toast(`prompt-queue: ${text}`)
   }
 }
 
@@ -330,7 +330,7 @@ export const register: Register = on => {
     if (ACTIONS.includes(action)) {
       $.clock.after(0, () => act($, action, e.text))
 
-      return { drop: `msg-queue ran ${action}` }
+      return { drop: `prompt-queue ran ${action}` }
     }
     const { head, messages } = splitQueued(e.text)
     // Only the box an edit was opened in saves it; a prompt from the bridge just queues.
@@ -347,7 +347,7 @@ export const register: Register = on => {
     const refusal = await refuseUnknown($, messages)
     if (refusal !== undefined) {
       // Dropped, the prompt goes back to the box as typed, to fix there.
-      $.ui.toast(`msg-queue: ${refusal}`)
+      $.ui.toast(`prompt-queue: ${refusal}`)
 
       return { drop: refusal }
     }
@@ -362,7 +362,7 @@ export const register: Register = on => {
     const later = isFirstNow ? rest : messages
     if (now === '' && (e.attachments?.length ?? 0) > 0) {
       const why = 'an image cannot wait in the queue, so nothing was queued; send it without >>'
-      $.ui.toast(`msg-queue: ${why}`)
+      $.ui.toast(`prompt-queue: ${why}`)
 
       return { drop: why }
     }
@@ -371,7 +371,7 @@ export const register: Register = on => {
       $.clock.after(0, () => clearTaken($, e.text))
       sendLater($)
 
-      return { drop: `msg-queue queued it (${(await read($, queue)).length} waiting)` }
+      return { drop: `prompt-queue queued it (${(await read($, queue)).length} waiting)` }
     }
     // What goes now goes as Enter sends it; held busy so the queue cannot start before it.
     await update($, isBusy, () => true)

@@ -109,7 +109,7 @@ test('>> with nothing running sends at once', async ($, on) => {
 test('>> with no message shows usage and sends nothing', async ($, on) => {
   const s = await session($, on)
   await s.type('>>')
-  expect(s.toasts).toEqual(['msg-queue: Usage: >> {message}'])
+  expect(s.toasts).toEqual(['prompt-queue: Usage: >> {message}'])
   expect(s.entered).toEqual([])
 })
 
@@ -171,7 +171,7 @@ test('>>edit moves only what is still queued into the box, and Enter queues it a
 test('>>edit with nothing queued says so', async ($, on) => {
   const s = await session($, on)
   await s.type('>>edit')
-  expect(s.toasts.at(-1)).toBe(`msg-queue: ${'Nothing is queued'}`)
+  expect(s.toasts.at(-1)).toBe(`prompt-queue: ${'Nothing is queued'}`)
   expect(s.boxText()).toBe('')
 })
 
@@ -180,7 +180,7 @@ test('>>clear drops the queue', async ($, on) => {
   await s.turnStart()
   await s.type('>> ONE\n>> TWO')
   await s.type('>>clear')
-  expect(s.toasts.at(-1)).toBe(`msg-queue: ${'Dropped 2 queued messages'}`)
+  expect(s.toasts.at(-1)).toBe(`prompt-queue: ${'Dropped 2 queued messages'}`)
   await s.turnEnd()
   expect(s.entered).toEqual([])
 })
@@ -192,7 +192,7 @@ test('an interrupted turn pauses the queue until >> resumes it', async ($, on) =
   await s.turnEnd('aborted')
   expect(s.entered).toEqual([])
   await s.type('>>')
-  expect(s.toasts.at(-1)).toBe(`msg-queue: ${'Queue resumed'}`)
+  expect(s.toasts.at(-1)).toBe(`prompt-queue: ${'Queue resumed'}`)
   expect(s.entered).toEqual(['ONE'])
 })
 
@@ -236,7 +236,7 @@ test('a failed command pauses the queue', async ($, on) => {
   expect(s.ran).toEqual(['/compact'])
   expect(s.entered).toEqual([])
   await s.type('>>')
-  expect(s.toasts.at(-1)).toBe(`msg-queue: ${'Queue resumed'}`)
+  expect(s.toasts.at(-1)).toBe(`prompt-queue: ${'Queue resumed'}`)
   expect(s.entered).toEqual(['ONE'])
 })
 
@@ -244,7 +244,7 @@ test('a message led by a path or unknown slash word is turned away, queuing noth
   const s = await session($, on)
   await s.turnStart()
   await s.type('>> ONE\n>> /tmp/x.log explain it')
-  expect(s.toasts).toEqual(['msg-queue: /tmp/x.log is not a command, so nothing was queued; start the message with other text to send it'])
+  expect(s.toasts).toEqual(['prompt-queue: /tmp/x.log is not a command, so nothing was queued; start the message with other text to send it'])
   await s.type('>> read /tmp/x.log')
   await s.turnEnd()
   expect(s.ran).toEqual([])
@@ -259,7 +259,7 @@ test('a compaction that does not stand pauses the queue', async ($, on) => {
   expect(s.ran).toEqual(['/compact'])
   expect(s.entered).toEqual([])
   await s.type('>>')
-  expect(s.toasts.at(-1)).toBe(`msg-queue: ${'Queue resumed'}`)
+  expect(s.toasts.at(-1)).toBe(`prompt-queue: ${'Queue resumed'}`)
   expect(s.entered).toEqual(['ONE'])
 })
 
@@ -381,7 +381,7 @@ test('emptying the box cancels the edit and puts the queue back as it was', asyn
   expect(s.boxText()).toBe('>> A\n>> B')
   await s.setBox('>> A')
   await s.setBox('')
-  expect(s.toasts.at(-1)).toBe('msg-queue: Edit cancelled; the queue is as it was')
+  expect(s.toasts.at(-1)).toBe('prompt-queue: Edit cancelled; the queue is as it was')
   expect(s.entered).toEqual([])
   await s.turnEnd()
   await s.turnStart()
@@ -430,9 +430,9 @@ test('a second >>edit during an edit says so; >>clear drops the held messages to
   await s.type('>> A')
   await s.type('>>edit')
   await s.type('>>edit')
-  expect(s.toasts.at(-1)).toBe('msg-queue: Already editing: Enter saves the box, emptying it cancels')
+  expect(s.toasts.at(-1)).toBe('prompt-queue: Already editing: Enter saves the box, emptying it cancels')
   await s.type('>>clear')
-  expect(s.toasts.at(-1)).toBe('msg-queue: Dropped 1 queued message')
+  expect(s.toasts.at(-1)).toBe('prompt-queue: Dropped 1 queued message')
   await s.turnEnd()
   expect(s.entered).toEqual([])
 })
@@ -460,7 +460,7 @@ test('a bare >> opens the queue for editing when it is waiting, and resumes it w
   await s.turnEnd('aborted')
   expect(s.entered).toEqual([])
   await s.type('>>')
-  expect(s.toasts.at(-1)).toBe('msg-queue: Queue resumed')
+  expect(s.toasts.at(-1)).toBe('prompt-queue: Queue resumed')
   expect(s.entered).toEqual(['B'])
 })
 
@@ -495,7 +495,7 @@ test('a prompt with an image that would have to wait is refused, not queued with
 
 test('the typing hint shows only for a line that queues', async ($, on) => {
   const s = await session($, on)
-  const band = await $.ui.mount({ plugin: 'msg-queue', surface: 'terminal', component: 'AbovePrompt', props: { hasSurvey: false, isWorking: true } as never })
+  const band = await $.ui.mount({ plugin: 'prompt-queue', surface: 'terminal', component: 'AbovePrompt', props: { hasSurvey: false, isWorking: true } as never })
   const drafting = async (text: string) => {
     await s.setBox(text)
     return (await band.find({ text: /joins the queue/ })) !== undefined
@@ -560,7 +560,7 @@ test('when the box will not take the queue, >>edit leaves it as it was', async (
   await s.type('>> A\n>> B')
   s.commands.refuseFill = true
   await s.type('>>edit')
-  expect(s.toasts.at(-1)).toBe('msg-queue: The prompt box could not take the queue, so it is unchanged')
+  expect(s.toasts.at(-1)).toBe('prompt-queue: The prompt box could not take the queue, so it is unchanged')
   await s.turnEnd()
   await s.turnStart()
   await s.turnEnd()
@@ -600,7 +600,7 @@ test('the band shows the label, five messages, how many more, and long ones cut'
   await s.turnStart()
   const long = 'x'.repeat(100)
   await s.type(['>> ' + long, '>> two\nsecond line', '>> 3', '>> 4', '>> 5', '>> 6', '>> 7'].join('\n'))
-  const band = await $.ui.mount({ plugin: 'msg-queue', surface: 'terminal', component: 'AbovePrompt', props: { hasSurvey: false, isWorking: true } as never })
+  const band = await $.ui.mount({ plugin: 'prompt-queue', surface: 'terminal', component: 'AbovePrompt', props: { hasSurvey: false, isWorking: true } as never })
   expect(await band.find({ text: 'queued (7)' })).toBeDefined()
   expect(await band.find({ text: `  1. ${'x'.repeat(72)}…` })).toBeDefined()
   expect(await band.find({ text: '  2. two…' })).toBeDefined()
@@ -610,7 +610,7 @@ test('the band shows the label, five messages, how many more, and long ones cut'
 
 test('the band says paused, and draws nothing of its own with nothing to show', async ($, on) => {
   const s = await session($, on)
-  const band = await $.ui.mount({ plugin: 'msg-queue', surface: 'terminal', component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false } as never })
+  const band = await $.ui.mount({ plugin: 'prompt-queue', surface: 'terminal', component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false } as never })
   expect(await band.find({ text: /queued|paused/ })).toBeUndefined()
   await s.turnStart()
   await s.type('>> A')

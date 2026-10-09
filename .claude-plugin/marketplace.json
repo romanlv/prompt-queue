@@ -1,11 +1,11 @@
 {
-  "name": "msg-queue",
+  "name": "prompt-queue",
   "owner": {
     "name": "Roman"
   },
   "plugins": [
     {
-      "name": "msg-queue",
+      "name": "prompt-queue",
       "source": "./"
     }
   ]

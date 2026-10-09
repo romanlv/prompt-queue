@@ -1,4 +1,4 @@
-# msg-queue
+# prompt-queue
 
 Line up messages for Claude while it works. Each one waits until the current task is completely finished, then goes in as a new task of its own.
 
@@ -12,7 +12,7 @@ While Claude is working, anything you type and send doesn't wait. Claude Code sl
 
 Claude Code's own "queue" shortcut (`ctrl+x enter`) gets slipped in the same way ([#99416](https://github.com/anthropics/claude-code/issues/99416)).
 
-msg-queue gives you a real queue: start a line with `>>` and it waits its turn.
+prompt-queue gives you a real queue: start a line with `>>` and it waits its turn.
 
 ## Quick start
 
@@ -78,18 +78,18 @@ Messages that were already sent are never in the edit.
 - `@file` mentions in a queued message reach Claude as plain text, not with the file attached: Claude Code only attaches files for prompts you send yourself. Claude can still open the file when the message asks it to work on it.
 - Images can't wait in the queue. A `>>` prompt with an image is refused while Claude is busy; send it without `>>`.
 - A queued line can't start with a `/` that isn't a command, such as a file path. You'll get a notice and the prompt comes back to fix. Put a word first: `>> read /tmp/log.txt`.
-- When Claude isn't busy and nothing is waiting, a `>>` message is simply sent as your prompt. Otherwise Claude Code shows "Prompt dropped by a hook" as msg-queue takes it. That's expected: the prompt went into the queue instead. Messages sent later from the queue are labelled "Prompt from the msg-queue plugin".
+- When Claude isn't busy and nothing is waiting, a `>>` message is simply sent as your prompt. Otherwise Claude Code shows "Prompt dropped by a hook" as prompt-queue takes it. That's expected: the prompt went into the queue instead. Messages sent later from the queue are labelled "Prompt from the prompt-queue plugin".
 - `>>` isn't a slash command, so it won't get in the way of `/` commands like `/q` in the typeahead.
 
 ## Install
 
-You need Claude Code 2.1.295 or newer. msg-queue is built on the Claude Code mod API, which is early access and may change between releases.
+You need Claude Code 2.1.295 or newer. prompt-queue is built on the Claude Code mod API, which is early access and may change between releases.
 
 **From GitHub** (recommended):
 
 ```sh
-claude plugin marketplace add romanlv/msg-queue
-claude plugin install msg-queue@msg-queue
+claude plugin marketplace add romanlv/prompt-queue
+claude plugin install prompt-queue@prompt-queue
 ```
 
 Start a new Claude Code session and type `>> hello` to check it works: with nothing running it is sent at once, like a normal message.
@@ -97,31 +97,31 @@ Start a new Claude Code session and type `>> hello` to check it works: with noth
 **From a copy on your machine**, for example a fork or a clone you have changed:
 
 ```sh
-git clone https://github.com/romanlv/msg-queue.git
-claude plugin marketplace add ./msg-queue
-claude plugin install msg-queue@msg-queue
+git clone https://github.com/romanlv/prompt-queue.git
+claude plugin marketplace add ./prompt-queue
+claude plugin install prompt-queue@prompt-queue
 ```
 
 **Try it without installing**, for one session only:
 
 ```sh
-git clone https://github.com/romanlv/msg-queue.git
-claude --plugin-dir ./msg-queue
+git clone https://github.com/romanlv/prompt-queue.git
+claude --plugin-dir ./prompt-queue
 ```
 
 **Update** to the latest version:
 
 ```sh
-claude plugin marketplace update msg-queue
-claude plugin update msg-queue@msg-queue
+claude plugin marketplace update prompt-queue
+claude plugin update prompt-queue@prompt-queue
 ```
 
 **Turn it off, or remove it:**
 
 ```sh
-claude plugin disable msg-queue@msg-queue     # keep it installed, but off
-claude plugin uninstall msg-queue@msg-queue
-claude plugin marketplace remove msg-queue
+claude plugin disable prompt-queue@prompt-queue     # keep it installed, but off
+claude plugin uninstall prompt-queue@prompt-queue
+claude plugin marketplace remove prompt-queue
 ```
 
 Changes take effect in the next session you start.
