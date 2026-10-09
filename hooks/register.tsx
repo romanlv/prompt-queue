@@ -384,8 +384,11 @@ export const register: Register = on => {
           </Text>
         )}
         {items.length > 0 && (
-          <Text dimColor>
-            {paused ? `⏸ paused (${items.length}): >> resumes · >>edit · >>clear` : `queued (${items.length}): >> edits · >>clear`}
+          <Text>
+            <Text color={paused ? 'warning' : 'suggestion'} bold>
+              {paused ? `⏸ paused (${items.length})` : `queued (${items.length})`}
+            </Text>
+            <Text dimColor>{paused ? ': >> resumes · >>edit · >>clear' : ': >> edits · >>clear'}</Text>
           </Text>
         )}
         {items.slice(0, SHOWN).map((m, i) => (
