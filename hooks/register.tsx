@@ -77,6 +77,7 @@ let isCancelPending = false
 let poll: Timer | undefined
 
 async function syncDraft($: EngineInterface) {
+  await restoreCarried($)
   const box = await $.prompt.read()
   const is = splitQueued(box.text).messages.length > 0
   if (is !== (await read($, isDraft))) {
@@ -105,6 +106,27 @@ async function cancelIfEmpty($: EngineInterface) {
 async function saveEdit($: EngineInterface, messages: string[]) {
   await update($, queue, q => [...messages, ...q])
   await update($, held, () => null)
+}
+
+// What was waiting when a /clear ended the session: the host starts the next one with
+// fresh state and no session.start, so the first hook to run in it puts this back.
+let carried: { items: string[]; isPaused: boolean } | undefined
+
+async function restoreCarried($: EngineInterface) {
+  const kept = carried
+  if (kept === undefined) {
+    return
+  }
+  carried = undefined
+  // Only into fresh state: had the queue come through the /clear, it already holds these.
+  if ((await read($, queue)).length > 0) {
+    return
+  }
+  await update($, queue, () => kept.items)
+  if (kept.isPaused) {
+    await update($, isPaused, () => true)
+  }
+  sendLater($)
 }
 
 let isSending = false
@@ -145,6 +167,7 @@ async function pause($: EngineInterface, why: string) {
 
 // Sends the queue's head once nothing runs; the next goes when that turn has ended.
 async function sendNext($: EngineInterface) {
+  await restoreCarried($)
   if (isSending || (await read($, isBusy)) || (await read($, isPaused)) || (await read($, held)) !== null) {
     return
   }
@@ -240,10 +263,27 @@ async function clearQueue($: EngineInterface) {
   return items.length === 0 ? 'Nothing is queued' : `Dropped ${items.length} queued message${items.length === 1 ? '' : 's'}`
 }
 
+// What the box shows for a paste, where the prompt has the pasted text itself.
+const PLACEHOLDER = /\[(?:Pasted text|Image) #\d+[^\]]*\]/
+
+// Whether the box shows text as typed, its pastes folded to placeholders or not.
+function showsPrompt(box: string, text: string): boolean {
+  if (box === text) {
+    return true
+  }
+  const parts = box.split(PLACEHOLDER)
+  if (parts.length === 1) {
+    return false
+  }
+  const escaped = parts.map(part => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+
+  return new RegExp(`^${escaped.join('[\\s\\S]*')}$`).test(text)
+}
+
 // The host hands a dropped prompt back to the box; this empties it once the mod has
 // taken the prompt, unless the person has typed something else since.
 async function clearTaken($: EngineInterface, text: string) {
-  if ((await $.prompt.read()).text === text) {
+  if (showsPrompt((await $.prompt.read()).text, text)) {
     await $.prompt.fill({ text: '' })
   }
 }
@@ -269,6 +309,8 @@ export const register: Register = on => {
     // The box changes without an edit event (Enter clears it, Up recalls), so it is polled.
     poll?.cancel()
     poll = $.clock.every(250, () => syncDraft($))
+    // A reload keeps the queue; anything left waiting with nothing running goes on.
+    sendLater($)
 
     return next(e)
   })
@@ -344,6 +386,45 @@ export const register: Register = on => {
     }
 
     return result
+  })
+
+  // A typed command with >> lines below it runs, and the lines queue after it; the host
+  // would otherwise hand them to the command as its arguments.
+  on('command.run', async ($, e, next) => {
+    if (e.origin.kind !== 'composer' && e.origin.kind !== 'bridge') {
+      return next(e)
+    }
+    const { head, messages } = splitQueued(e.args)
+    if (messages.length === 0) {
+      return next(e)
+    }
+    const refusal = await refuseUnknown($, messages)
+    if (refusal !== undefined) {
+      return { text: refusal }
+    }
+    await update($, isBusy, () => true)
+    await update($, queue, q => [...q, ...messages])
+    const before = turnsStarted
+    try {
+      return await next({ ...e, args: head })
+    } finally {
+      // A command that started a turn is released by that turn's end instead.
+      if (turnsStarted === before) {
+        await update($, isBusy, () => false)
+        sendLater($)
+      }
+    }
+  })
+
+  on('session.end', async ($, e, next) => {
+    if (e.reason === 'clear') {
+      const items = [...((await read($, held)) ?? []), ...(await read($, queue))]
+      if (items.length > 0) {
+        carried = { items, isPaused: await read($, isPaused) }
+      }
+    }
+
+    return next(e)
   })
 
   on('session.compact', async ($, e, next) => {

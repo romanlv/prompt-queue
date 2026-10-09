@@ -54,6 +54,7 @@ async function session($: Engine, on: On, initialBox = '') {
   })
   on('prompt.edit', (_$, e) => ({ text: e.inputText, cursor: e.inputText.length }) as never)
   on('session.start', (_$, e) => e as never)
+  on('session.end', (_$, e) => ({ sessionId: e.sessionId }) as never)
   // What the engine draws above the prompt when no plugin draws there.
   on('ui.render', { component: 'AbovePrompt' }, (_$, e) => h(_$.ui.resolve(e).Box, {}) as never)
   const clock = mock.clock(on)
@@ -500,4 +501,43 @@ test('a queued message another hook drops moves the queue on to the next', async
   await s.type('>> DROPPED\n>> NEXT')
   await s.turnEnd()
   expect(s.entered).toEqual(['NEXT'])
+})
+
+test('a prompt with a paste is cleared from the box, which shows the paste folded', async ($, on) => {
+  const s = await session($, on)
+  await s.turnStart()
+  await s.type('>> count these: one\ntwo\nthree', 'composer', '>> count these: [Pasted text #1 +2 lines]')
+  expect(s.boxText()).toBe('')
+})
+
+test('a folded paste that does not match what was sent is left in the box', async ($, on) => {
+  const s = await session($, on)
+  await s.turnStart()
+  await s.type('>> count these: one', 'composer', '>> other thing [Pasted text #1 +2 lines]')
+  expect(s.boxText()).toBe('>> other thing [Pasted text #1 +2 lines]')
+})
+
+test('a typed command with >> lines below it runs bare, and the lines queue after it', async ($, on) => {
+  const s = await session($, on)
+  const presentation = { isFullscreen: false, columns: 80 }
+  await $.command.run({ command: 'compact', args: 'keep the plan\n>> AFTER', origin: { kind: 'composer' }, presentation } as never)
+  await s.turnStart()
+  expect(s.ran).toEqual(['/compact keep the plan'])
+  await s.turnEnd()
+  expect(s.entered).toEqual(['AFTER'])
+})
+
+test('what is waiting comes through a /clear, which starts the next session with fresh state', async ($, on) => {
+  const s = await session($, on)
+  await s.turnStart()
+  await s.type('>> A\n>> B')
+  await $.session.end({ reason: 'clear', sessionId: 'old', resume: { id: 'old' } } as never)
+  // The kit keeps state across the clear; emptying the queue stands in for the fresh session.
+  await s.type('>>clear')
+  await s.turnEnd()
+  await s.setBox('')
+  expect(s.entered).toEqual(['A'])
+  await s.turnStart()
+  await s.turnEnd()
+  expect(s.entered).toEqual(['A', 'B'])
 })

@@ -1,6 +1,6 @@
 {
   "name": "msg-queue",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": ">> {message}: queue a message to send once the current turn has fully ended, each as a turn of its own",
   "types": "./types/index.d.ts",
   "author": {

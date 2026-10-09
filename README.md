@@ -50,6 +50,15 @@ also check the README while you're at it
 >> write the docs for it
 ```
 
+The same works the other way round: type a command with `>>` lines below it, and the command runs now while the lines wait for it to finish.
+
+```
+/compact
+>> carry on with the next step
+```
+
+Queued messages carry on through a `/clear` too, so `>> /clear` followed by `>> start the next task` gives the next task a fresh conversation.
+
 **See what's waiting.** The list above the prompt shows the queue. Messages leave it as soon as they are sent.
 
 **Change or remove queued messages.** Type `>>` on its own and press Enter. Everything still waiting comes back into the prompt box, one `>>` line each. Nothing is sent while you edit.
@@ -66,6 +75,7 @@ Messages that were already sent are never in the edit.
 ## Good to know
 
 - A `>>` that will queue its line is shown in colour as you type. One in the middle of a line, inside a code block (between ```` ``` ````), or stuck to a word (`>>like this`) is ordinary text and goes to Claude as written.
+- `@file` mentions in a queued message reach Claude as plain text, not with the file attached: Claude Code only attaches files for prompts you send yourself. Claude can still open the file when the message asks it to work on it.
 - Images can't wait in the queue. A `>>` prompt with an image is refused while Claude is busy; send it without `>>`.
 - A queued line can't start with a `/` that isn't a command, such as a file path. You'll get a notice and the prompt comes back to fix. Put a word first: `>> read /tmp/log.txt`.
 - When Claude isn't busy and nothing is waiting, a `>>` message is simply sent as your prompt. Otherwise Claude Code shows "Prompt dropped by a hook" as msg-queue takes it. That's expected: the prompt went into the queue instead. Messages sent later from the queue are labelled "Prompt from the msg-queue plugin".
