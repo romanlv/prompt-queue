@@ -12,11 +12,11 @@ A plain Enter while Claude works steers the running turn: Claude Code hands the 
 - a queued message that starts with a slash command runs as that command: `/qq /compact keep the plan` compacts once everything queued before it has finished, and the next message waits for the compaction. A message led by anything else with a slash, such as a path, is refused; put other text first
 - an interrupted or failed turn, a failed command, or a compaction cancelled with Esc pauses the queue; `/qq` on its own resumes it
 
-One `/qq` can carry several messages: each line that opens with `/qq` starts a new one, and other lines belong to the message above them.
+One prompt can carry several messages: each line that opens with `/qq` starts a new one, and other lines belong to the message above them. Text above the first `/qq` line is sent at once, as a plain Enter would send it: mid-turn it steers the running turn. A `/qq` line inside a code fence is text.
 
 ```
-/qq fix the failing tests
-and run lint after
+fix the failing tests
+/qq run lint after
 /qq /compact
 /qq summarise what changed
 ```

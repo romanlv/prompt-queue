@@ -9,17 +9,34 @@ const isBusy = atom({ plugin: 'msg-queue', key: 'isBusy' } as const, false)
 const isPaused = atom({ plugin: 'msg-queue', key: 'isPaused' } as const, false)
 
 const QQ = /^\/qq(\s|$)/
-// /qq-edit puts the queue back in the box one item per line, so one /qq can carry
+// /qq-edit puts the queue back in the box one item per line, so one prompt can carry
 // several; each line opening with /qq starts a message of its own.
-const NEXT_QQ = /\n\/qq(?:[ \t]|$)/m
+const QQ_LINE = /^\/qq(?:[ \t]|$)/
+const FENCE = /^\s*(?:```|~~~)/
 const SHOWN = 5
 const WIDTH = 72
 
-function splitMessages(args: string): string[] {
-  return args
-    .split(NEXT_QQ)
-    .map(m => m.trim())
-    .filter(m => m !== '')
+// Splits text into what comes before its first /qq line and the messages the /qq lines
+// open; a /qq line inside a code fence is text.
+function splitAtQq(text: string): { head: string; messages: string[] } {
+  const head: string[] = []
+  const messages: string[][] = []
+  let isFenced = false
+  for (const line of text.split('\n')) {
+    if (FENCE.test(line)) {
+      isFenced = !isFenced
+    }
+    if (!isFenced && QQ_LINE.test(line)) {
+      messages.push([line.slice('/qq'.length)])
+      continue
+    }
+    ;(messages.at(-1) ?? head).push(line)
+  }
+
+  return {
+    head: head.join('\n').trim(),
+    messages: messages.map(m => m.join('\n').trim()).filter(m => m !== ''),
+  }
 }
 
 function preview(message: string): string {
@@ -57,10 +74,14 @@ function asCommand(item: string) {
   return { command, args }
 }
 
-async function unknownCommands($: EngineInterface, messages: string[]) {
+async function refuseUnknown($: EngineInterface, messages: string[]) {
   const known = new Set((await $.command.list()).map(c => c.name))
+  const unknown = messages.find(m => m.startsWith('/') && !known.has(asCommand(m)?.command ?? ''))
+  const word = unknown?.split(/\s/)[0]
 
-  return messages.filter(m => m.startsWith('/') && !known.has(asCommand(m)?.command ?? ''))
+  return word === undefined
+    ? undefined
+    : `${word} is not a command, so nothing was queued; start the message with other text to send it`
 }
 
 async function pause($: EngineInterface, why: string) {
@@ -148,7 +169,7 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: 'qq' }, async ($, e) => {
-    const messages = splitMessages(e.args)
+    const { messages } = splitAtQq(`/qq ${e.args}`)
     if (messages.length === 0) {
       if (await read($, isPaused)) {
         await update($, isPaused, () => false)
@@ -159,11 +180,9 @@ export const register: Register = on => {
 
       return { text: 'Usage: /qq {message}' }
     }
-    const unknown = await unknownCommands($, messages)
-    if (unknown.length > 0) {
-      const word = unknown[0]?.split(/\s/)[0]
-
-      return { text: `${word} is not a command, so nothing was queued; start the message with other text to send it` }
+    const refusal = await refuseUnknown($, messages)
+    if (refusal !== undefined) {
+      return { text: refusal }
     }
     await update($, queue, q => [...q, ...messages])
     sendLater($)
@@ -200,6 +219,34 @@ export const register: Register = on => {
     }
 
     return { text: `Dropped ${items.length} queued message${items.length === 1 ? '' : 's'}` }
+  })
+
+  // A prompt typed with /qq lines below its own text sends that text now and queues the rest.
+  on('prompt.submit', async ($, e, next) => {
+    if (e.origin.kind !== 'composer' && e.origin.kind !== 'bridge') {
+      return next(e)
+    }
+    const { head, messages } = splitAtQq(e.text)
+    if (head === '' || messages.length === 0) {
+      return next(e)
+    }
+    const refusal = await refuseUnknown($, messages)
+    if (refusal !== undefined) {
+      $.ui.toast(`/qq: ${refusal}`)
+      $.clock.after(0, () => $.prompt.fill({ text: e.text }))
+
+      return { drop: refusal }
+    }
+    // Held busy so the queue cannot start before the text sent now.
+    await update($, isBusy, () => true)
+    await update($, queue, q => [...q, ...messages])
+    const result = await next({ ...e, text: head })
+    if ('drop' in result) {
+      await update($, isBusy, () => false)
+      sendLater($)
+    }
+
+    return result
   })
 
   on('session.compact', async ($, e, next) => {

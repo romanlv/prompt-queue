@@ -53,7 +53,13 @@ function session($: Engine, on: On, box = '') {
     await $.turn.complete({ answer: '', durationMs: 1, isAborted: reason === 'aborted', turnId: 't', reason } as never)
     await clock.advance(0)
   }
-  return { entered, filled, ran, commands, qq, turnStart, turnEnd }
+  // The person pressing Enter on a prompt, mid-turn or not.
+  const type = async (text: string) => {
+    const out = await $.prompt.submit({ text, wait: false, origin: { kind: 'composer' } } as never)
+    await clock.advance(0)
+    return out
+  }
+  return { entered, filled, ran, commands, qq, type, turnStart, turnEnd }
 }
 
 test('/qq with nothing running sends at once', async ($, on) => {
@@ -220,4 +226,45 @@ test('a compaction that does not stand pauses the queue', async ($, on) => {
   expect(s.entered).toEqual([])
   expect((await s.qq('qq')).text).toBe('Queue resumed')
   expect(s.entered).toEqual(['ONE'])
+})
+
+test('a typed prompt with /qq lines below its text sends the text and queues the rest', async ($, on) => {
+  const s = session($, on)
+  await s.type('this is sent right away\n\n/qq this is fine\n\n/qq another one\nwith a second line\n/qq /compact')
+  expect(s.entered).toEqual(['this is sent right away'])
+  await s.turnStart()
+  await s.turnEnd()
+  expect(s.entered).toEqual(['this is sent right away', 'this is fine'])
+  await s.turnStart()
+  await s.turnEnd()
+  expect(s.entered.at(-1)).toBe('another one\nwith a second line')
+  await s.turnStart()
+  await s.turnEnd()
+  expect(s.ran).toEqual(['/compact'])
+})
+
+test('typed mid-turn, the text goes in at once and the /qq parts wait for the turn to end', async ($, on) => {
+  const s = session($, on)
+  await s.turnStart()
+  await s.type('steer this\n/qq ONE')
+  expect(s.entered).toEqual(['steer this'])
+  await s.turnEnd()
+  expect(s.entered).toEqual(['steer this', 'ONE'])
+})
+
+test('a typed prompt without /qq lines, or with them only in a code fence, is left alone', async ($, on) => {
+  const s = session($, on)
+  await s.type('plain\nmessage')
+  await s.type('the docs say\n```\n/qq do a thing\n```\nand /qq mid-line')
+  await s.turnStart()
+  await s.turnEnd()
+  expect(s.entered).toEqual(['plain\nmessage', 'the docs say\n```\n/qq do a thing\n```\nand /qq mid-line'])
+})
+
+test('a typed prompt queuing an unknown /word is dropped whole and put back in the box', async ($, on) => {
+  const s = session($, on)
+  const out = await s.type('do this\n/qq /tmp/x.log explain')
+  expect(out).toEqual({ drop: '/tmp/x.log is not a command, so nothing was queued; start the message with other text to send it' })
+  expect(s.entered).toEqual([])
+  expect(s.filled).toEqual(['do this\n/qq /tmp/x.log explain'])
 })
