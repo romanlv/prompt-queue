@@ -11,7 +11,11 @@ async function session($: Engine, on: On, initialBox = '') {
   const ran: string[] = []
   const toasts: string[] = []
   const commands = { fail: false, startsTurn: false, compact: 'stands' as 'stands' | 'skipped' }
+  // The bottom of the chain, standing in for the engine; another plugin drops DROPPED.
   on('prompt.submit', (_$, e) => {
+    if (e.text === 'DROPPED') {
+      return { drop: 'another plugin' } as never
+    }
     entered.push(e.text)
     return { text: e.text }
   })
@@ -50,6 +54,8 @@ async function session($: Engine, on: On, initialBox = '') {
   })
   on('prompt.edit', (_$, e) => ({ text: e.inputText, cursor: e.inputText.length }) as never)
   on('session.start', (_$, e) => e as never)
+  // What the engine draws above the prompt when no plugin draws there.
+  on('ui.render', { component: 'AbovePrompt' }, (_$, e) => h(_$.ui.resolve(e).Box, {}) as never)
   const clock = mock.clock(on)
   // Again under the mock clock, so the mod's poll of the box runs on it.
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true } as never)
@@ -463,4 +469,35 @@ test('>> queues rather than sends when something is waiting, paused, or the line
   await s.turnEnd('aborted')
   expect(await s.type('>> B')).toMatchObject({ drop: expect.any(String) })
   expect(s.entered).toEqual([])
+})
+
+test('a prompt with an image that would have to wait is refused, not queued without it', async ($, on) => {
+  const s = await session($, on)
+  await s.turnStart()
+  const out = await $.prompt.submit({ text: '>> look at this', wait: false, origin: { kind: 'composer' }, attachments: [{ type: 'image' }] } as never)
+  expect(out).toMatchObject({ drop: expect.stringContaining('an image cannot wait in the queue') })
+  await s.turnEnd()
+  expect(s.entered).toEqual([])
+})
+
+test('the typing hint shows only for a line that queues', async ($, on) => {
+  const s = await session($, on)
+  const band = await $.ui.mount({ plugin: 'msg-queue', surface: 'terminal', component: 'AbovePrompt', props: { hasSurvey: false, isWorking: true } as never })
+  const drafting = async (text: string) => {
+    await s.setBox(text)
+    return (await band.find({ text: /joins the queue/ })) !== undefined
+  }
+  expect(await drafting('>> next')).toBe(true)
+  expect(await drafting('now\n>> next')).toBe(true)
+  for (const text of ['>>edit', '>>clear', '>>', '>>word', '```\n>> fenced\n```', 'a >> b']) {
+    expect(await drafting(text)).toBe(false)
+  }
+})
+
+test('a queued message another hook drops moves the queue on to the next', async ($, on) => {
+  const s = await session($, on)
+  await s.turnStart()
+  await s.type('>> DROPPED\n>> NEXT')
+  await s.turnEnd()
+  expect(s.entered).toEqual(['NEXT'])
 })

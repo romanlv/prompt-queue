@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, PromptDecoration, Register } from 'claude-code'
+import type { EngineInterface, PromptDecoration, Register, Timer } from 'claude-code'
 
 const isDraft = atom({ plugin: 'msg-queue', key: 'isDraft' } as const, false)
 const queue = atom({ plugin: 'msg-queue', key: 'queue' } as const, [] as string[])
@@ -15,7 +15,6 @@ const held = atom({ plugin: 'msg-queue', key: 'held' } as const, null as string[
 // >>edit and >>clear are whole prompts of their own.
 const LEADER = '>>'
 const QUEUED_LINE = /^>>(?:[ \t]|$)/
-const DRAFT = /^>>/m
 const FENCE = /^\s*(?:```|~~~)/
 const SHOWN = 5
 const WIDTH = 72
@@ -75,10 +74,11 @@ function preview(message: string): string {
 }
 
 let isCancelPending = false
+let poll: Timer | undefined
 
 async function syncDraft($: EngineInterface) {
   const box = await $.prompt.read()
-  const is = DRAFT.test(box.text)
+  const is = splitQueued(box.text).messages.length > 0
   if (is !== (await read($, isDraft))) {
     await update($, isDraft, () => is)
   }
@@ -165,6 +165,7 @@ async function sendNext($: EngineInterface) {
       })
       if ('drop' in result) {
         await update($, isBusy, () => false)
+        sendLater($)
       }
     }
   } finally {
@@ -266,7 +267,8 @@ function sendLater($: EngineInterface) {
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     // The box changes without an edit event (Enter clears it, Up recalls), so it is polled.
-    $.clock.every(250, () => syncDraft($))
+    poll?.cancel()
+    poll = $.clock.every(250, () => syncDraft($))
 
     return next(e)
   })
@@ -313,29 +315,29 @@ export const register: Register = on => {
     const isIdle =
       !(await read($, isBusy)) && !(await read($, isPaused)) && (await read($, queue)).length === 0
     const [first = '', ...rest] = messages
-    if (head === '' && isIdle && !first.startsWith('/')) {
-      await update($, isBusy, () => true)
-      await (isEditing ? saveEdit($, rest) : update($, queue, q => [...q, ...rest]))
-      const result = await next({ ...e, text: first })
-      if ('drop' in result) {
-        await update($, isBusy, () => false)
-        sendLater($)
-      }
+    const isFirstNow = head === '' && isIdle && !first.startsWith('/')
+    const now = isFirstNow ? first : head
+    const later = isFirstNow ? rest : messages
+    if (now === '' && (e.attachments?.length ?? 0) > 0) {
+      const why = 'an image cannot wait in the queue, so nothing was queued; send it without >>'
+      $.ui.toast(`msg-queue: ${why}`)
 
-      return result
+      return { drop: why }
     }
-    if (head === '') {
-      await (isEditing ? saveEdit($, messages) : update($, queue, q => [...q, ...messages]))
+    if (now === '') {
+      await (isEditing ? saveEdit($, later) : update($, queue, q => [...q, ...later]))
       $.clock.after(0, () => clearTaken($, e.text))
       sendLater($)
 
       return { drop: `msg-queue queued it (${(await read($, queue)).length} waiting)` }
     }
-    // The text above the >> lines goes now, as Enter sends it; held busy so the queue
-    // cannot start before it.
+    // What goes now goes as Enter sends it; held busy so the queue cannot start before it.
     await update($, isBusy, () => true)
-    await (isEditing ? saveEdit($, messages) : update($, queue, q => [...q, ...messages]))
-    const result = await next({ ...e, text: head })
+    await (isEditing ? saveEdit($, later) : update($, queue, q => [...q, ...later]))
+    const result = await next({ ...e, text: now }).catch(async (error: unknown) => {
+      await update($, isBusy, () => false)
+      throw error
+    })
     if ('drop' in result) {
       await update($, isBusy, () => false)
       sendLater($)
