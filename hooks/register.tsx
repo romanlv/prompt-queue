@@ -7,6 +7,9 @@ const queue = atom({ plugin: 'msg-queue', key: 'queue' } as const, [] as string[
 const isBusy = atom({ plugin: 'msg-queue', key: 'isBusy' } as const, false)
 // Set when a turn ends by interruption or error, so Esc stops the chain rather than starting the next item.
 const isPaused = atom({ plugin: 'msg-queue', key: 'isPaused' } as const, false)
+// The messages >>edit put in the box, held out of the queue until Enter saves the box's
+// version or emptying the box puts them back; null when no edit is open.
+const held = atom({ plugin: 'msg-queue', key: 'held' } as const, null as string[] | null)
 
 // Each line opening with >> starts a queued message, and the lines below belong to it;
 // >>edit and >>clear are whole prompts of their own.
@@ -71,11 +74,37 @@ function preview(message: string): string {
   return isCut ? `${line.slice(0, WIDTH)}…` : line
 }
 
+let isCancelPending = false
+
 async function syncDraft($: EngineInterface) {
-  const is = DRAFT.test((await $.prompt.read()).text)
+  const box = await $.prompt.read()
+  const is = DRAFT.test(box.text)
   if (is !== (await read($, isDraft))) {
     await update($, isDraft, () => is)
   }
+  if (box.text === '' && !isCancelPending && (await read($, held)) !== null) {
+    // Enter empties the box too, a moment before its prompt.submit ends the edit.
+    isCancelPending = true
+    $.clock.after(300, () => cancelIfEmpty($))
+  }
+}
+
+async function cancelIfEmpty($: EngineInterface) {
+  isCancelPending = false
+  const items = await read($, held)
+  if (items === null || (await $.prompt.read()).text !== '') {
+    return
+  }
+  await update($, queue, q => [...items, ...q])
+  await update($, held, () => null)
+  $.ui.toast('msg-queue: Edit cancelled; the queue is as it was')
+  sendLater($)
+}
+
+// Ends an open edit with the messages the person saved, in the held ones' place.
+async function saveEdit($: EngineInterface, messages: string[]) {
+  await update($, queue, q => [...messages, ...q])
+  await update($, held, () => null)
 }
 
 let isSending = false
@@ -116,7 +145,7 @@ async function pause($: EngineInterface, why: string) {
 
 // Sends the queue's head once nothing runs; the next goes when that turn has ended.
 async function sendNext($: EngineInterface) {
-  if (isSending || (await read($, isBusy)) || (await read($, isPaused))) {
+  if (isSending || (await read($, isBusy)) || (await read($, isPaused)) || (await read($, held)) !== null) {
     return
   }
   isSending = true
@@ -164,9 +193,12 @@ async function runCommand($: EngineInterface, run: { command: string; args: stri
   }
 }
 
+// A bare >> resumes a paused queue, opens a waiting one for editing, and otherwise shows usage.
 async function resume($: EngineInterface) {
   if (!(await read($, isPaused))) {
-    return 'Usage: >> {message}'
+    const isWaiting = (await read($, queue)).length > 0 || (await read($, held)) !== null
+
+    return isWaiting ? editQueue($) : 'Usage: >> {message}'
   }
   await update($, isPaused, () => false)
   sendLater($)
@@ -175,10 +207,14 @@ async function resume($: EngineInterface) {
 }
 
 async function editQueue($: EngineInterface) {
+  if ((await read($, held)) !== null) {
+    return 'Already editing: Enter saves the box, emptying it cancels'
+  }
   const items = await read($, queue)
   if (items.length === 0) {
     return 'Nothing is queued'
   }
+  await update($, held, () => items)
   await update($, queue, () => [])
   const lines = items.map(m => `${LEADER} ${m}`).join('\n')
   const box = await $.prompt.read()
@@ -186,6 +222,7 @@ async function editQueue($: EngineInterface) {
   const filled = await $.prompt.fill({ text, mode: text === lines ? 'replace' : 'append', decorations: leaderRuns(text) })
   if (!filled.isFilled) {
     await update($, queue, q => [...items, ...q])
+    await update($, held, () => null)
 
     return 'The prompt box could not take the queue, so it is unchanged'
   }
@@ -194,8 +231,9 @@ async function editQueue($: EngineInterface) {
 }
 
 async function clearQueue($: EngineInterface) {
-  const items = await read($, queue)
+  const items = [...((await read($, held)) ?? []), ...(await read($, queue))]
   await update($, queue, () => [])
+  await update($, held, () => null)
   await update($, isPaused, () => false)
 
   return items.length === 0 ? 'Nothing is queued' : `Dropped ${items.length} queued message${items.length === 1 ? '' : 's'}`
@@ -251,7 +289,15 @@ export const register: Register = on => {
       return { drop: `msg-queue ran ${action}` }
     }
     const { head, messages } = splitQueued(e.text)
+    // Only the box an edit was opened in saves it; a prompt from the bridge just queues.
+    const isEditing = e.origin.kind === 'composer' && (await read($, held)) !== null
     if (messages.length === 0) {
+      if (isEditing) {
+        // Every >> line deleted: the held messages go.
+        await saveEdit($, [])
+        sendLater($)
+      }
+
       return next(e)
     }
     const refusal = await refuseUnknown($, messages)
@@ -262,7 +308,7 @@ export const register: Register = on => {
       return { drop: refusal }
     }
     if (head === '') {
-      await update($, queue, q => [...q, ...messages])
+      await (isEditing ? saveEdit($, messages) : update($, queue, q => [...q, ...messages]))
       $.clock.after(0, () => clearTaken($, e.text))
       sendLater($)
 
@@ -271,7 +317,7 @@ export const register: Register = on => {
     // The text above the >> lines goes now, as Enter sends it; held busy so the queue
     // cannot start before it.
     await update($, isBusy, () => true)
-    await update($, queue, q => [...q, ...messages])
+    await (isEditing ? saveEdit($, messages) : update($, queue, q => [...q, ...messages]))
     const result = await next({ ...e, text: head })
     if ('drop' in result) {
       await update($, isBusy, () => false)
@@ -306,7 +352,8 @@ export const register: Register = on => {
     const result = await next(e)
     if (e.agentId === undefined) {
       await update($, isBusy, () => false)
-      if (e.reason !== 'answer' && (await read($, queue)).length > 0) {
+      const waiting = (await read($, queue)).length + ((await read($, held))?.length ?? 0)
+      if (e.reason !== 'answer' && waiting > 0) {
         await update($, isPaused, () => true)
       }
       sendLater($)
@@ -322,7 +369,8 @@ export const register: Register = on => {
     const items = await read($, queue)
     const isDrafting = await read($, isDraft)
     const paused = await read($, isPaused)
-    if (items.length === 0 && !isDrafting) {
+    const editing = await read($, held)
+    if (items.length === 0 && !isDrafting && editing === null) {
       return next(e)
     }
     const { Box, Text } = $.ui.resolve(e)
@@ -330,10 +378,14 @@ export const register: Register = on => {
 
     return (
       <Box flexDirection="column">
+        {editing !== null && (
+          <Text color="suggestion">
+            {`✎ editing ${editing.length} queued: Enter saves · empty the box to cancel${paused ? ' · ⏸ paused, >> resumes' : ''}`}
+          </Text>
+        )}
         {items.length > 0 && (
           <Text dimColor>
-            {paused ? `⏸ paused (${items.length}): >> resumes · ` : `queued (${items.length}): `}
-            {'>>edit · >>clear'}
+            {paused ? `⏸ paused (${items.length}): >> resumes · >>edit · >>clear` : `queued (${items.length}): >> edits · >>clear`}
           </Text>
         )}
         {items.slice(0, SHOWN).map((m, i) => (
@@ -344,7 +396,11 @@ export const register: Register = on => {
         {items.length > SHOWN && <Text dimColor>{`  +${items.length - SHOWN} more`}</Text>}
         {isDrafting && (
           <Text color="suggestion">
-            {waits ? '↳ >>: joins the queue, sent after the current turn has fully ended' : '↳ >>: nothing is running, so it sends now'}
+            {paused
+              ? '↳ >>: joins the queue, which is paused until >> on its own resumes it'
+              : waits
+                ? '↳ >>: joins the queue, sent after the current turn has fully ended'
+                : '↳ >>: nothing is running, so it sends now'}
           </Text>
         )}
       </Box>

@@ -5,6 +5,7 @@ declare module 'claude-code' {
       queue: string[]
       isBusy: boolean
       isPaused: boolean
+      held: string[] | null
     }
   }
 }

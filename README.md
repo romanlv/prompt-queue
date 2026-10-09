@@ -7,10 +7,10 @@ A plain Enter while Claude works steers the running turn: Claude Code hands the 
 - `>> {message}` adds a message to the queue, mid-turn or not; with nothing running it sends at once
 - each turn that ends with an answer sends the next one, so every message runs as its own turn
 - the queue shows above the prompt; finished and running messages drop off
-- `>>edit` moves what is still queued back into the box as `>>` lines; edit or delete lines and press Enter to queue them again
+- `>>` on its own, or `>>edit`, opens what is still waiting in the box as `>>` lines; sent and running messages are not in it. While the edit is open nothing is sent. Edit or delete lines and press Enter to save them in their place; empty the box to cancel and keep the queue as it was
 - `>>clear` drops the queue
 - a queued message that starts with a slash command runs as that command: `>> /compact keep the plan` compacts once everything queued before it has finished, and the next message waits for the compaction. A message led by anything else with a slash, such as a path, is refused; put other text first
-- an interrupted or failed turn, a failed command, or a compaction cancelled with Esc pauses the queue; `>>` on its own resumes it
+- an interrupted or failed turn, a failed command, or a compaction cancelled with Esc pauses the queue, an open edit included; `>>` on its own resumes it, and `>>edit` edits a paused queue
 
 One prompt can carry several messages: each line that opens with `>> ` starts a new one, and other lines belong to the message above them. Text above the first `>>` line is sent at once, as a plain Enter would send it: mid-turn it steers the running turn. A `>>` line inside a code fence is text, and `>>` must be followed by a space or the line's end.
 

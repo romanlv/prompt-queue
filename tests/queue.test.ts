@@ -4,7 +4,8 @@ import type { TestBody } from 'claude-code/testing'
 type Engine = Parameters<TestBody>[0]
 type On = Parameters<TestBody>[1]
 
-function session($: Engine, on: On, box = '') {
+async function session($: Engine, on: On, initialBox = '') {
+  let box = initialBox
   const entered: string[] = []
   const filled: string[] = []
   const ran: string[] = []
@@ -17,6 +18,7 @@ function session($: Engine, on: On, box = '') {
   on('prompt.read', () => ({ value: { text: box, cursor: box.length } }) as never)
   const decorated: unknown[] = []
   on('prompt.fill', (_$, e) => {
+    box = e.mode === 'append' ? box + e.text : e.text
     filled.push(e.text)
     decorated.push(e.decorations)
     return { isFilled: true }
@@ -46,7 +48,11 @@ function session($: Engine, on: On, box = '') {
   on('session.compact', () => {
     return (commands.compact === 'skipped' ? { skip: 'vetoed' } : { messages: [{ role: 'user', text: 'summary', toolUses: [] }] }) as never
   })
+  on('prompt.edit', (_$, e) => ({ text: e.inputText, cursor: e.inputText.length }) as never)
+  on('session.start', (_$, e) => e as never)
   const clock = mock.clock(on)
+  // Again under the mock clock, so the mod's poll of the box runs on it.
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true } as never)
   const turnStart = async () => {
     await $.turn.start({ text: 'work', turnId: 't' })
     await clock.advance(0)
@@ -56,29 +62,40 @@ function session($: Engine, on: On, box = '') {
     await clock.advance(0)
   }
   // The person pressing Enter on a prompt, mid-turn or not.
-  const type = async (text: string) => {
-    const out = await $.prompt.submit({ text, wait: false, origin: { kind: 'composer' } } as never)
+  // Enter empties the box, and the host hands a dropped prompt back to it.
+  const type = async (text: string, kind: 'composer' | 'bridge' = 'composer', typedSince?: string) => {
+    box = ''
+    const out = await $.prompt.submit({ text, wait: false, origin: { kind } } as never)
+    if ('drop' in out) {
+      box = typedSince ?? text
+    }
     await clock.advance(0)
     return out
   }
-  return { entered, filled, decorated, ran, commands, toasts, type, turnStart, turnEnd }
+  const setBox = async (text: string) => {
+    box = text
+    await clock.advance(250)
+    await clock.advance(300)
+  }
+  const boxText = () => box
+  return { entered, filled, decorated, ran, commands, toasts, type, setBox, boxText, turnStart, turnEnd }
 }
 
 test('>> with nothing running sends at once', async ($, on) => {
-  const s = session($, on)
+  const s = await session($, on)
   await s.type('>>   reply APPLE ')
   expect(s.entered).toEqual(['reply APPLE'])
 })
 
 test('>> with no message shows usage and sends nothing', async ($, on) => {
-  const s = session($, on)
+  const s = await session($, on)
   await s.type('>>')
   expect(s.toasts).toEqual(['msg-queue: Usage: >> {message}'])
   expect(s.entered).toEqual([])
 })
 
 test('queued messages go one per finished turn, in order', async ($, on) => {
-  const s = session($, on)
+  const s = await session($, on)
   await s.turnStart()
   await s.type('>> ONE')
   await s.type('>> TWO\n>> THREE')
@@ -97,7 +114,7 @@ test('queued messages go one per finished turn, in order', async ($, on) => {
 })
 
 test('a subagent finishing does not release the next message', async ($, on) => {
-  const s = session($, on)
+  const s = await session($, on)
   await s.turnStart()
   await s.type('>> ONE')
   await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 's', reason: 'answer', agentId: 'a1' } as never)
@@ -105,7 +122,7 @@ test('a subagent finishing does not release the next message', async ($, on) => 
 })
 
 test('a multi-line message stays one; >> inside a line is text', async ($, on) => {
-  const s = session($, on)
+  const s = await session($, on)
   await s.turnStart()
   await s.type('>> first\nsecond\n>> next\n  indented\n>>\n>> what >> does\n>>x too')
   for (let i = 0; i < 3; i++) {
@@ -116,7 +133,7 @@ test('a multi-line message stays one; >> inside a line is text', async ($, on) =
 })
 
 test('>>edit moves only what is still queued into the box, and Enter queues it again', async ($, on) => {
-  const s = session($, on)
+  const s = await session($, on)
   await s.turnStart()
   await s.type('>> ONE')
   await s.type('>> TWO')
@@ -125,30 +142,22 @@ test('>>edit moves only what is still queued into the box, and Enter queues it a
   await s.turnStart()
   expect(s.entered).toEqual(['ONE'])
   await s.type('>>edit')
-  expect(s.filled).toEqual(['>> TWO\n>> THREE'])
+  expect(s.boxText()).toBe('>> TWO\n>> THREE')
   await s.turnEnd()
   expect(s.entered).toEqual(['ONE'])
   await s.type('>> THREE-EDITED')
   expect(s.entered).toEqual(['ONE', 'THREE-EDITED'])
 })
 
-test('>>edit appends below a draft already in the box', async ($, on) => {
-  const s = session($, on, 'half typed')
-  await s.turnStart()
-  await s.type('>> ONE')
-  await s.type('>>edit')
-  expect(s.filled).toEqual(['\n>> ONE'])
-})
-
 test('>>edit with nothing queued says so', async ($, on) => {
-  const s = session($, on)
+  const s = await session($, on)
   await s.type('>>edit')
   expect(s.toasts.at(-1)).toBe(`msg-queue: ${'Nothing is queued'}`)
-  expect(s.filled).toEqual([])
+  expect(s.boxText()).toBe('')
 })
 
 test('>>clear drops the queue', async ($, on) => {
-  const s = session($, on)
+  const s = await session($, on)
   await s.turnStart()
   await s.type('>> ONE\n>> TWO')
   await s.type('>>clear')
@@ -158,7 +167,7 @@ test('>>clear drops the queue', async ($, on) => {
 })
 
 test('an interrupted turn pauses the queue until >> resumes it', async ($, on) => {
-  const s = session($, on)
+  const s = await session($, on)
   await s.turnStart()
   await s.type('>> ONE')
   await s.turnEnd('aborted')
@@ -169,7 +178,7 @@ test('an interrupted turn pauses the queue until >> resumes it', async ($, on) =
 })
 
 test('a queued slash command runs as that command in its place in the queue', async ($, on) => {
-  const s = session($, on)
+  const s = await session($, on)
   await s.turnStart()
   await s.type('>> ONE\n>> /compact keep the plan\n>> TWO')
   await s.turnEnd()
@@ -182,7 +191,7 @@ test('a queued slash command runs as that command in its place in the queue', as
 })
 
 test('a slash command with nothing running runs at once', async ($, on) => {
-  const s = session($, on)
+  const s = await session($, on)
   await s.type('>> /compact')
   await s.type('>> ONE')
   expect(s.ran).toEqual(['/compact'])
@@ -190,7 +199,7 @@ test('a slash command with nothing running runs at once', async ($, on) => {
 })
 
 test('a command that starts a turn holds the queue until that turn ends', async ($, on) => {
-  const s = session($, on)
+  const s = await session($, on)
   s.commands.startsTurn = true
   await s.type('>> /review\n>> ONE')
   expect(s.ran).toEqual(['/review'])
@@ -200,7 +209,7 @@ test('a command that starts a turn holds the queue until that turn ends', async 
 })
 
 test('a failed command pauses the queue', async ($, on) => {
-  const s = session($, on)
+  const s = await session($, on)
   s.commands.fail = true
   await s.turnStart()
   await s.type('>> /compact\n>> ONE')
@@ -213,7 +222,7 @@ test('a failed command pauses the queue', async ($, on) => {
 })
 
 test('a message led by a path or unknown slash word is turned away, queuing nothing', async ($, on) => {
-  const s = session($, on)
+  const s = await session($, on)
   await s.turnStart()
   await s.type('>> ONE\n>> /tmp/x.log explain it')
   expect(s.toasts).toEqual(['msg-queue: /tmp/x.log is not a command, so nothing was queued; start the message with other text to send it'])
@@ -225,7 +234,7 @@ test('a message led by a path or unknown slash word is turned away, queuing noth
 
 // The kit skips a hook that throws, so Esc's aborted compaction is checked live, not here.
 test('a compaction that does not stand pauses the queue', async ($, on) => {
-  const s = session($, on)
+  const s = await session($, on)
   s.commands.compact = 'skipped'
   await s.type('>> /compact\n>> ONE')
   expect(s.ran).toEqual(['/compact'])
@@ -236,7 +245,7 @@ test('a compaction that does not stand pauses the queue', async ($, on) => {
 })
 
 test('a typed prompt with >> lines below its text sends the text and queues the rest', async ($, on) => {
-  const s = session($, on)
+  const s = await session($, on)
   await s.type('this is sent right away\n\n>> this is fine\n\n>> another one\nwith a second line\n>> /compact')
   expect(s.entered).toEqual(['this is sent right away'])
   await s.turnStart()
@@ -251,7 +260,7 @@ test('a typed prompt with >> lines below its text sends the text and queues the 
 })
 
 test('typed mid-turn, the text goes in at once and the >> parts wait for the turn to end', async ($, on) => {
-  const s = session($, on)
+  const s = await session($, on)
   await s.turnStart()
   await s.type('steer this\n>> ONE')
   expect(s.entered).toEqual(['steer this'])
@@ -260,7 +269,7 @@ test('typed mid-turn, the text goes in at once and the >> parts wait for the tur
 })
 
 test('a typed prompt without >> lines, or with them only in a code fence, is left alone', async ($, on) => {
-  const s = session($, on)
+  const s = await session($, on)
   await s.type('plain\nmessage')
   await s.type('the docs say\n```\n>> do a thing\n```\nand >> mid-line')
   await s.turnStart()
@@ -269,7 +278,7 @@ test('a typed prompt without >> lines, or with them only in a code fence, is lef
 })
 
 test('a typed prompt queuing an unknown /word is dropped whole, for the host to hand back', async ($, on) => {
-  const s = session($, on)
+  const s = await session($, on)
   const out = await s.type('do this\n>> /tmp/x.log explain')
   expect(out).toEqual({ drop: '/tmp/x.log is not a command, so nothing was queued; start the message with other text to send it' })
   expect(s.entered).toEqual([])
@@ -277,23 +286,23 @@ test('a typed prompt queuing an unknown /word is dropped whole, for the host to 
 })
 
 test('>> must be followed by a space to queue, so >>word text goes to the model as typed', async ($, on) => {
-  const s = session($, on)
+  const s = await session($, on)
   await s.type('>>edit the readme')
   expect(s.entered).toEqual(['>>edit the readme'])
 })
 
 test('a prompt the mod takes is cleared from the box the host hands it back to', async ($, on) => {
-  const s = session($, on, '>> ONE')
+  const s = await session($, on, '>> ONE')
   await s.turnStart()
   await s.type('>> ONE')
   expect(s.filled).toEqual([''])
 })
 
 test('the box is left alone when the person has typed something else since', async ($, on) => {
-  const s = session($, on, 'new draft')
+  const s = await session($, on)
   await s.turnStart()
-  await s.type('>> ONE')
-  expect(s.filled).toEqual([])
+  await s.type('>> ONE', 'composer', 'new draft')
+  expect(s.boxText()).toBe('new draft')
 })
 
 type Edited = { decorations?: { start: number; end: number }[] }
@@ -305,7 +314,6 @@ function edit($: Engine, text: string) {
 
 test('the >> that queues a line is coloured; one mid-line, in a fence or before a word is not', async ($, on) => {
   session($, on)
-  on('prompt.edit', (_$, e) => ({ text: e.inputText, cursor: e.inputText.length }) as never)
   const text = 'now\n>> one\na >> b\n```\n>> fenced\n```\n>>word\n>>'
   const result = await edit($, text)
   const painted = (result.decorations ?? []).map(d => text.slice(d.start, d.end) + '@' + d.start)
@@ -314,16 +322,125 @@ test('the >> that queues a line is coloured; one mid-line, in a fence or before 
 })
 
 test('>>edit and >>clear are coloured as whole prompts', async ($, on) => {
-  session($, on)
-  on('prompt.edit', (_$, e) => ({ text: e.inputText, cursor: e.inputText.length }) as never)
+  await session($, on)
   expect((await edit($, '>>edit')).decorations).toMatchObject([{ start: 0, end: 2 }])
   expect((await edit($, '>>edits')).decorations).toBeUndefined()
 })
 
 test('>>edit fills the box with its >> already coloured', async ($, on) => {
-  const s = session($, on)
+  const s = await session($, on)
   await s.turnStart()
   await s.type('>> ONE\n>> TWO')
   await s.type('>>edit')
   expect(s.decorated.at(-1)).toMatchObject([{ start: 0, end: 2 }, { start: 7, end: 9 }])
+})
+
+test('>>edit holds the queue: a turn ending mid-edit sends nothing, and Enter saves the box in its place', async ($, on) => {
+  const s = await session($, on)
+  await s.turnStart()
+  await s.type('>> A\n>> B\n>> C\n>> D')
+  await s.turnEnd()
+  await s.turnStart()
+  expect(s.entered).toEqual(['A'])
+  await s.type('>>edit')
+  // A has been sent, so only what is still waiting comes back.
+  expect(s.boxText()).toBe('>> B\n>> C\n>> D')
+  await s.turnEnd()
+  expect(s.entered).toEqual(['A'])
+  await s.type('>> B\n>> D-EDITED')
+  expect(s.entered).toEqual(['A', 'B'])
+  await s.turnStart()
+  await s.turnEnd()
+  expect(s.entered).toEqual(['A', 'B', 'D-EDITED'])
+})
+
+test('emptying the box cancels the edit and puts the queue back as it was', async ($, on) => {
+  const s = await session($, on)
+  await s.turnStart()
+  await s.type('>> A\n>> B')
+  await s.type('>>edit')
+  expect(s.boxText()).toBe('>> A\n>> B')
+  await s.setBox('>> A')
+  await s.setBox('')
+  expect(s.toasts.at(-1)).toBe('msg-queue: Edit cancelled; the queue is as it was')
+  expect(s.entered).toEqual([])
+  await s.turnEnd()
+  await s.turnStart()
+  await s.turnEnd()
+  expect(s.entered).toEqual(['A', 'B'])
+})
+
+test('cancelling once the turn has ended sends the restored queue in order', async ($, on) => {
+  const s = await session($, on)
+  await s.turnStart()
+  await s.type('>> A\n>> B')
+  await s.type('>>edit')
+  await s.turnEnd()
+  await s.setBox('')
+  expect(s.entered).toEqual(['A'])
+})
+
+test('Esc during an edit pauses, so saving afterwards sends nothing until >> resumes', async ($, on) => {
+  const s = await session($, on)
+  await s.turnStart()
+  await s.type('>> A\n>> B')
+  await s.type('>>edit')
+  await s.turnEnd('aborted')
+  await s.type('>> B')
+  expect(s.entered).toEqual([])
+  await s.type('>>')
+  expect(s.entered).toEqual(['B'])
+})
+
+test('deleting every >> line and sending other text drops the held messages', async ($, on) => {
+  const s = await session($, on)
+  await s.turnStart()
+  await s.type('>> A\n>> B')
+  await s.type('>>edit')
+  await s.type('never mind, do this instead')
+  await s.turnEnd()
+  expect(s.entered).toEqual(['never mind, do this instead'])
+  await s.turnStart()
+  await s.turnEnd()
+  expect(s.entered).toEqual(['never mind, do this instead'])
+})
+
+test('a second >>edit during an edit says so; >>clear drops the held messages too', async ($, on) => {
+  const s = await session($, on)
+  await s.turnStart()
+  await s.type('>> A')
+  await s.type('>>edit')
+  await s.type('>>edit')
+  expect(s.toasts.at(-1)).toBe('msg-queue: Already editing: Enter saves the box, emptying it cancels')
+  await s.type('>>clear')
+  expect(s.toasts.at(-1)).toBe('msg-queue: Dropped 1 queued message')
+  await s.turnEnd()
+  expect(s.entered).toEqual([])
+})
+
+test('a >> from the bridge during an edit joins the queue after the edited ones', async ($, on) => {
+  const s = await session($, on)
+  await s.turnStart()
+  await s.type('>> A')
+  await s.type('>>edit')
+  await s.type('>> PHONE', 'bridge')
+  await s.type('>> A-EDITED')
+  await s.turnEnd()
+  await s.turnStart()
+  await s.turnEnd()
+  expect(s.entered).toEqual(['A-EDITED', 'PHONE'])
+})
+
+test('a bare >> opens the queue for editing when it is waiting, and resumes it when paused', async ($, on) => {
+  const s = await session($, on)
+  await s.turnStart()
+  await s.type('>> A\n>> B')
+  await s.type('>>')
+  expect(s.boxText()).toBe('>> A\n>> B')
+  await s.type('>> B')
+  await s.turnEnd('aborted')
+  expect(s.entered).toEqual([])
+  await s.type('>>')
+  expect(s.toasts.at(-1)).toBe('msg-queue: Queue resumed')
+  expect(s.entered).toEqual(['B'])
 })
