@@ -73,12 +73,48 @@ Messages that were already sent are never in the edit.
 
 ## Install
 
+You need Claude Code 2.1.295 or newer. msg-queue is built on the Claude Code mod API, which is early access and may change between releases.
+
+**From GitHub** (recommended):
+
 ```sh
 claude plugin marketplace add romanlv/msg-queue
 claude plugin install msg-queue@msg-queue
 ```
 
-Tested with Claude Code 2.1.295. It is built on the Claude Code mod API, which is early access and may change between releases.
+Start a new Claude Code session and type `>> hello` to check it works: with nothing running it is sent at once, like a normal message.
+
+**From a copy on your machine**, for example a fork or a clone you have changed:
+
+```sh
+git clone https://github.com/romanlv/msg-queue.git
+claude plugin marketplace add ./msg-queue
+claude plugin install msg-queue@msg-queue
+```
+
+**Try it without installing**, for one session only:
+
+```sh
+git clone https://github.com/romanlv/msg-queue.git
+claude --plugin-dir ./msg-queue
+```
+
+**Update** to the latest version:
+
+```sh
+claude plugin marketplace update msg-queue
+claude plugin update msg-queue@msg-queue
+```
+
+**Turn it off, or remove it:**
+
+```sh
+claude plugin disable msg-queue@msg-queue     # keep it installed, but off
+claude plugin uninstall msg-queue@msg-queue
+claude plugin marketplace remove msg-queue
+```
+
+Changes take effect in the next session you start.
 
 ## Develop
 
