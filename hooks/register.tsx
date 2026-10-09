@@ -8,7 +8,7 @@ const isBusy = atom({ plugin: 'prompt-queue', key: 'isBusy' } as const, false)
 // Set when a turn ends by interruption or error, so Esc stops the chain rather than starting the next item.
 const isPaused = atom({ plugin: 'prompt-queue', key: 'isPaused' } as const, false)
 // The messages >>edit put in the box, held out of the queue until Enter saves the box's
-// version or emptying the box puts them back; null when no edit is open.
+// version or emptying the box removes them; null when no edit is open.
 const held = atom({ plugin: 'prompt-queue', key: 'held' } as const, null as string[] | null)
 
 // Each line opening with >> starts a queued message, and the lines below belong to it;
@@ -73,7 +73,7 @@ function preview(message: string): string {
   return isCut ? `${line.slice(0, WIDTH)}…` : line
 }
 
-let isCancelPending = false
+let isRemovePending = false
 let poll: Timer | undefined
 
 async function syncDraft($: EngineInterface) {
@@ -83,23 +83,34 @@ async function syncDraft($: EngineInterface) {
   if (is !== (await read($, isDraft))) {
     await update($, isDraft, () => is)
   }
-  if (box.text === '' && !isCancelPending && (await read($, held)) !== null) {
+  if (box.text === '' && !isRemovePending && (await read($, held)) !== null) {
     // Enter empties the box too, a moment before its prompt.submit ends the edit.
-    isCancelPending = true
-    $.clock.after(300, () => cancelIfEmpty($))
+    isRemovePending = true
+    $.clock.after(300, () => removeIfEmpty($))
   }
 }
 
-async function cancelIfEmpty($: EngineInterface) {
-  isCancelPending = false
+// An edit whose box is emptied has every held message deleted from it.
+async function removeIfEmpty($: EngineInterface) {
+  isRemovePending = false
   const items = await read($, held)
   if (items === null || (await $.prompt.read()).text !== '') {
     return
   }
-  await update($, queue, q => [...items, ...q])
-  await update($, held, () => null)
-  $.ui.toast('prompt-queue: Edit cancelled; the queue is as it was')
+  await saveEdit($, [])
+  if ((await read($, queue)).length === 0) {
+    await update($, isPaused, () => false)
+  }
+  $.ui.toast(`prompt-queue: ${removed(items.length)}`)
   sendLater($)
+}
+
+function removed(count: number): string {
+  return `Removed ${count} queued message${count === 1 ? '' : 's'}`
+}
+
+function isSame(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((m, i) => m === b[i])
 }
 
 // Ends an open edit with the messages the person saved, in the held ones' place.
@@ -232,7 +243,7 @@ async function resume($: EngineInterface) {
 
 async function editQueue($: EngineInterface) {
   if ((await read($, held)) !== null) {
-    return 'Already editing: Enter saves the box, emptying it cancels'
+    return 'Already editing: Enter saves the box, emptying it removes them all'
   }
   const items = await read($, queue)
   if (items.length === 0) {
@@ -260,7 +271,7 @@ async function clearQueue($: EngineInterface) {
   await update($, held, () => null)
   await update($, isPaused, () => false)
 
-  return items.length === 0 ? 'Nothing is queued' : `Dropped ${items.length} queued message${items.length === 1 ? '' : 's'}`
+  return items.length === 0 ? 'Nothing is queued' : removed(items.length)
 }
 
 // What the box shows for a paste, where the prompt has the pasted text itself.
@@ -343,6 +354,14 @@ export const register: Register = on => {
       }
 
       return next(e)
+    }
+    const kept = isEditing && head === '' ? await read($, held) : null
+    if (kept !== null && isSame(messages, kept)) {
+      await saveEdit($, kept)
+      $.clock.after(0, () => clearTaken($, e.text))
+      sendLater($)
+
+      return { drop: `prompt-queue left the queue unchanged (${(await read($, queue)).length} waiting)` }
     }
     const refusal = await refuseUnknown($, messages)
     if (refusal !== undefined) {
@@ -483,7 +502,7 @@ export const register: Register = on => {
       <Box flexDirection="column">
         {editing !== null && (
           <Text color="suggestion">
-            {`✎ editing ${editing.length} queued: Enter saves · empty the box to cancel${paused ? ' · ⏸ paused, >> resumes' : ''}`}
+            {`✎ editing ${editing.length} queued: Enter saves · empty the box to remove all${paused ? ' · ⏸ paused, >> resumes' : ''}`}
           </Text>
         )}
         {items.length > 0 && (

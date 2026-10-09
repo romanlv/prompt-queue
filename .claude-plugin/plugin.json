@@ -1,7 +1,7 @@
 {
   "name": "prompt-queue",
-  "version": "0.9.1",
-  "description": ">> {message}: queue a message to send once the current turn has fully ended, each as a turn of its own",
+  "version": "0.10.0",
+  "description": "Queue prompts with >>: each waits until Claude's current turn has fully ended, then runs as a new turn, instead of steering the turn in progress",
   "types": "./types/index.d.ts",
   "author": {
     "name": "Roman"

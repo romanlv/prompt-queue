@@ -91,7 +91,7 @@ async function session($: Engine, on: On, initialBox = '') {
     await clock.advance(300)
   }
   const boxText = () => box
-  // Changes the box and lets one poll see it, leaving the cancel check pending.
+  // Changes the box and lets one poll see it, leaving the empty-box check pending.
   const setBoxQuietly = async (text: string) => {
     box = text
     await clock.advance(250)
@@ -180,7 +180,7 @@ test('>>clear drops the queue', async ($, on) => {
   await s.turnStart()
   await s.type('>> ONE\n>> TWO')
   await s.type('>>clear')
-  expect(s.toasts.at(-1)).toBe(`prompt-queue: ${'Dropped 2 queued messages'}`)
+  expect(s.toasts.at(-1)).toBe(`prompt-queue: ${'Removed 2 queued messages'}`)
   await s.turnEnd()
   expect(s.entered).toEqual([])
 })
@@ -373,7 +373,7 @@ test('>>edit holds the queue: a turn ending mid-edit sends nothing, and Enter sa
   expect(s.entered).toEqual(['A', 'B', 'D-EDITED'])
 })
 
-test('emptying the box cancels the edit and puts the queue back as it was', async ($, on) => {
+test('emptying the box removes every message the edit held', async ($, on) => {
   const s = await session($, on)
   await s.turnStart()
   await s.type('>> A\n>> B')
@@ -381,21 +381,88 @@ test('emptying the box cancels the edit and puts the queue back as it was', asyn
   expect(s.boxText()).toBe('>> A\n>> B')
   await s.setBox('>> A')
   await s.setBox('')
-  expect(s.toasts.at(-1)).toBe('prompt-queue: Edit cancelled; the queue is as it was')
-  expect(s.entered).toEqual([])
+  expect(s.toasts.at(-1)).toBe('prompt-queue: Removed 2 queued messages')
+  expect(s.boxText()).toBe('')
   await s.turnEnd()
   await s.turnStart()
   await s.turnEnd()
-  expect(s.entered).toEqual(['A', 'B'])
+  expect(s.entered).toEqual([])
 })
 
-test('cancelling once the turn has ended sends the restored queue in order', async ($, on) => {
+test('deleting the only queued message empties the box and removes it', async ($, on) => {
+  const s = await session($, on)
+  await s.turnStart()
+  await s.type('>> A')
+  await s.type('>>')
+  expect(s.boxText()).toBe('>> A')
+  await s.setBox('')
+  expect(s.toasts.at(-1)).toBe('prompt-queue: Removed 1 queued message')
+  await s.turnEnd()
+  expect(s.entered).toEqual([])
+  await s.type('>> NEXT')
+  expect(s.entered).toEqual(['NEXT'])
+})
+
+test('emptying the box once the turn has ended sends nothing', async ($, on) => {
   const s = await session($, on)
   await s.turnStart()
   await s.type('>> A\n>> B')
   await s.type('>>edit')
   await s.turnEnd()
   await s.setBox('')
+  await s.advance(1000)
+  expect(s.entered).toEqual([])
+})
+
+test('emptying the box keeps what the bridge queued during the edit', async ($, on) => {
+  const s = await session($, on)
+  await s.turnStart()
+  await s.type('>> A')
+  await s.type('>>edit')
+  await s.type('>> PHONE', 'bridge')
+  await s.setBox('')
+  expect(s.toasts.at(-1)).toBe('prompt-queue: Removed 1 queued message')
+  await s.turnEnd()
+  expect(s.entered).toEqual(['PHONE'])
+})
+
+test('emptying the box of a paused queue leaves nothing paused', async ($, on) => {
+  const s = await session($, on)
+  await s.turnStart()
+  await s.type('>> A')
+  await s.turnEnd('aborted')
+  await s.type('>>edit')
+  await s.setBox('')
+  expect(s.toasts.at(-1)).toBe('prompt-queue: Removed 1 queued message')
+  await s.type('>> NEXT')
+  expect(s.entered).toEqual(['NEXT'])
+})
+
+test('Enter on an unchanged edit leaves the queue as it was and says so', async ($, on) => {
+  const s = await session($, on)
+  await s.turnStart()
+  await s.type('>> A\n>> B')
+  await s.type('>>edit')
+  const out = await s.type('>> A\n>> B')
+  expect(out).toEqual({ drop: 'prompt-queue left the queue unchanged (2 waiting)' })
+  expect(s.boxText()).toBe('')
+  await s.advance(1000)
+  expect(s.toasts.some(t => t.includes('Removed'))).toBe(false)
+  await s.turnEnd()
+  expect(s.entered).toEqual(['A'])
+  await s.turnStart()
+  await s.turnEnd()
+  expect(s.entered).toEqual(['A', 'B'])
+})
+
+test('Enter on an unchanged edit after the turn has ended sends the head', async ($, on) => {
+  const s = await session($, on)
+  await s.turnStart()
+  await s.type('>> A\n>> B')
+  await s.type('>>edit')
+  await s.turnEnd()
+  expect(s.entered).toEqual([])
+  await s.type('>> A\n>> B')
   expect(s.entered).toEqual(['A'])
 })
 
@@ -430,9 +497,9 @@ test('a second >>edit during an edit says so; >>clear drops the held messages to
   await s.type('>> A')
   await s.type('>>edit')
   await s.type('>>edit')
-  expect(s.toasts.at(-1)).toBe('prompt-queue: Already editing: Enter saves the box, emptying it cancels')
+  expect(s.toasts.at(-1)).toBe('prompt-queue: Already editing: Enter saves the box, emptying it removes them all')
   await s.type('>>clear')
-  expect(s.toasts.at(-1)).toBe('prompt-queue: Dropped 1 queued message')
+  expect(s.toasts.at(-1)).toBe('prompt-queue: Removed 1 queued message')
   await s.turnEnd()
   expect(s.entered).toEqual([])
 })
@@ -642,7 +709,7 @@ test('a queue that came through a /clear is not doubled by the carried copy', as
   expect(s.entered).toEqual(['A', 'B'])
 })
 
-test('Enter emptying the box just before a save does not count as a cancel', async ($, on) => {
+test('Enter emptying the box just before a save does not remove the queue', async ($, on) => {
   const s = await session($, on)
   await s.turnStart()
   await s.type('>> A\n>> B')
@@ -651,7 +718,7 @@ test('Enter emptying the box just before a save does not count as a cancel', asy
   await s.setBoxQuietly('')
   await s.type('>> A-EDITED')
   await s.advance(300)
-  expect(s.toasts.some(t => t.includes('Edit cancelled'))).toBe(false)
+  expect(s.toasts.some(t => t.includes('Removed'))).toBe(false)
   await s.turnEnd()
   expect(s.entered).toEqual(['A-EDITED'])
 })
