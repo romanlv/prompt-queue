@@ -307,6 +307,23 @@ export const register: Register = on => {
 
       return { drop: refusal }
     }
+    // With nothing running or waiting, the first message is simply the prompt: sent as typed,
+    // without the >>. A slash command still goes through the queue, as the host will not run
+    // one passed down as prompt text.
+    const isIdle =
+      !(await read($, isBusy)) && !(await read($, isPaused)) && (await read($, queue)).length === 0
+    const [first = '', ...rest] = messages
+    if (head === '' && isIdle && !first.startsWith('/')) {
+      await update($, isBusy, () => true)
+      await (isEditing ? saveEdit($, rest) : update($, queue, q => [...q, ...rest]))
+      const result = await next({ ...e, text: first })
+      if ('drop' in result) {
+        await update($, isBusy, () => false)
+        sendLater($)
+      }
+
+      return result
+    }
     if (head === '') {
       await (isEditing ? saveEdit($, messages) : update($, queue, q => [...q, ...messages]))
       $.clock.after(0, () => clearTaken($, e.text))

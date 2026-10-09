@@ -444,3 +444,23 @@ test('a bare >> opens the queue for editing when it is waiting, and resumes it w
   expect(s.toasts.at(-1)).toBe('msg-queue: Queue resumed')
   expect(s.entered).toEqual(['B'])
 })
+
+test('with nothing running or waiting, >> sends the first message as the prompt itself', async ($, on) => {
+  const s = await session($, on)
+  const out = await s.type('>> ONE\n>> TWO')
+  expect(out).toEqual({ text: 'ONE' })
+  expect(s.entered).toEqual(['ONE'])
+  await s.turnStart()
+  await s.turnEnd()
+  expect(s.entered).toEqual(['ONE', 'TWO'])
+})
+
+test('>> queues rather than sends when something is waiting, paused, or the line is a command', async ($, on) => {
+  const s = await session($, on)
+  expect(await s.type('>> /compact')).toMatchObject({ drop: expect.any(String) })
+  await s.turnStart()
+  await s.type('>> A')
+  await s.turnEnd('aborted')
+  expect(await s.type('>> B')).toMatchObject({ drop: expect.any(String) })
+  expect(s.entered).toEqual([])
+})
