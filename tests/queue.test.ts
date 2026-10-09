@@ -15,8 +15,10 @@ function session($: Engine, on: On, box = '') {
     return { text: e.text }
   })
   on('prompt.read', () => ({ value: { text: box, cursor: box.length } }) as never)
+  const decorated: unknown[] = []
   on('prompt.fill', (_$, e) => {
     filled.push(e.text)
+    decorated.push(e.decorations)
     return { isFilled: true }
   })
   on('turn.start', (_$, e) => ({ turnId: e.turnId }))
@@ -59,7 +61,7 @@ function session($: Engine, on: On, box = '') {
     await clock.advance(0)
     return out
   }
-  return { entered, filled, ran, commands, toasts, type, turnStart, turnEnd }
+  return { entered, filled, decorated, ran, commands, toasts, type, turnStart, turnEnd }
 }
 
 test('>> with nothing running sends at once', async ($, on) => {
@@ -292,4 +294,36 @@ test('the box is left alone when the person has typed something else since', asy
   await s.turnStart()
   await s.type('>> ONE')
   expect(s.filled).toEqual([])
+})
+
+type Edited = { decorations?: { start: number; end: number }[] }
+
+// The person typing text into an empty box; the kit's engine types no prompt.edit call.
+function edit($: Engine, text: string) {
+  return ($.prompt as unknown as { edit: (e: unknown) => Promise<Edited> }).edit({ origin: { kind: 'composer' }, text: '', cursor: 0, start: 0, end: 0, inputText: text } as never)
+}
+
+test('the >> that queues a line is coloured; one mid-line, in a fence or before a word is not', async ($, on) => {
+  session($, on)
+  on('prompt.edit', (_$, e) => ({ text: e.inputText, cursor: e.inputText.length }) as never)
+  const text = 'now\n>> one\na >> b\n```\n>> fenced\n```\n>>word\n>>'
+  const result = await edit($, text)
+  const painted = (result.decorations ?? []).map(d => text.slice(d.start, d.end) + '@' + d.start)
+  expect(painted).toEqual(['>>@4', '>>@43'])
+  expect(result.decorations?.[0]).toMatchObject({ color: 'suggestion', bold: true })
+})
+
+test('>>edit and >>clear are coloured as whole prompts', async ($, on) => {
+  session($, on)
+  on('prompt.edit', (_$, e) => ({ text: e.inputText, cursor: e.inputText.length }) as never)
+  expect((await edit($, '>>edit')).decorations).toMatchObject([{ start: 0, end: 2 }])
+  expect((await edit($, '>>edits')).decorations).toBeUndefined()
+})
+
+test('>>edit fills the box with its >> already coloured', async ($, on) => {
+  const s = session($, on)
+  await s.turnStart()
+  await s.type('>> ONE\n>> TWO')
+  await s.type('>>edit')
+  expect(s.decorated.at(-1)).toMatchObject([{ start: 0, end: 2 }, { start: 7, end: 9 }])
 })

@@ -21,7 +21,7 @@ fix the failing tests
 >> summarise what changed
 ```
 
-`>>` is not a slash command, so it stays out of the `/` typeahead. Claude Code notes each prompt the mod takes as "Prompt dropped by a hook".
+Each `>>` that will queue its line shows in colour as you type, so a plain one (mid-line, in a fence, or before a word) is easy to tell apart. `>>` is not a slash command, so it stays out of the `/` typeahead. Claude Code notes each prompt the mod takes as "Prompt dropped by a hook".
 
 ## Install
 

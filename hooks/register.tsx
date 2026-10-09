@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, PromptDecoration, Register } from 'claude-code'
 
 const isDraft = atom({ plugin: 'msg-queue', key: 'isDraft' } as const, false)
 const queue = atom({ plugin: 'msg-queue', key: 'queue' } as const, [] as string[])
@@ -38,6 +38,30 @@ function splitQueued(text: string): { head: string; messages: string[] } {
     head: head.join('\n').trim(),
     messages: messages.map(m => m.join('\n').trim()).filter(m => m !== ''),
   }
+}
+
+// The >> runs to colour in text as the box holds it: each that queues its line, and the
+// whole prompt when it is one of the actions.
+function leaderRuns(text: string): PromptDecoration[] {
+  const paint = (start: number): PromptDecoration => ({ start, end: start + LEADER.length, color: 'suggestion', bold: true })
+  const trimmed = text.trim()
+  if (ACTIONS.includes(trimmed)) {
+    return [paint(text.indexOf(trimmed))]
+  }
+  const runs: PromptDecoration[] = []
+  let isFenced = false
+  let offset = 0
+  for (const line of text.split('\n')) {
+    if (FENCE.test(line)) {
+      isFenced = !isFenced
+    }
+    if (!isFenced && QUEUED_LINE.test(line)) {
+      runs.push(paint(offset))
+    }
+    offset += line.length + 1
+  }
+
+  return runs
 }
 
 function preview(message: string): string {
@@ -158,7 +182,8 @@ async function editQueue($: EngineInterface) {
   await update($, queue, () => [])
   const lines = items.map(m => `${LEADER} ${m}`).join('\n')
   const box = await $.prompt.read()
-  const filled = await $.prompt.fill(box.text.trim() === '' ? { text: lines } : { text: `\n${lines}`, mode: 'append' })
+  const text = box.text.trim() === '' ? lines : `\n${lines}`
+  const filled = await $.prompt.fill({ text, mode: text === lines ? 'replace' : 'append', decorations: leaderRuns(text) })
   if (!filled.isFilled) {
     await update($, queue, q => [...items, ...q])
 
@@ -206,6 +231,13 @@ export const register: Register = on => {
     $.clock.every(250, () => syncDraft($))
 
     return next(e)
+  })
+
+  on('prompt.edit', async ($, e, next) => {
+    const result = await next(e)
+    const runs = leaderRuns(result.text)
+
+    return runs.length === 0 ? result : { ...result, decorations: [...(result.decorations ?? []), ...runs] }
   })
 
   on('prompt.submit', async ($, e, next) => {
