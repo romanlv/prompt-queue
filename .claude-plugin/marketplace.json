@@ -1,5 +1,6 @@
 {
   "name": "prompt-queue",
+  "description": "Queue prompts with >>: each waits until Claude's current turn has fully ended, then runs as a new turn, instead of steering the turn in progress",
   "owner": {
     "name": "Roman"
   },
