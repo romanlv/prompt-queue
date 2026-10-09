@@ -2,24 +2,26 @@
 
 A Claude Code mod that holds messages until the running turn has fully ended, then sends each as a turn of its own.
 
-A plain Enter while Claude works steers the running turn: Claude Code hands the message in at the next tool call. `chat:queueSubmit` (`ctrl+x enter`) is documented to wait its turn but is absorbed mid-turn the same way ([#99416](https://github.com/anthropics/claude-code/issues/99416)). `/qq` queues instead.
+A plain Enter while Claude works steers the running turn: Claude Code hands the message in at the next tool call. `chat:queueSubmit` (`ctrl+x enter`) is documented to wait its turn but is absorbed mid-turn the same way ([#99416](https://github.com/anthropics/claude-code/issues/99416)). A prompt led by `>>` queues instead.
 
-- `/qq {message}` adds a message to the queue, mid-turn or not; with nothing running it sends at once
+- `>> {message}` adds a message to the queue, mid-turn or not; with nothing running it sends at once
 - each turn that ends with an answer sends the next one, so every message runs as its own turn
 - the queue shows above the prompt; finished and running messages drop off
-- `/qq-edit` moves what is still queued back into the box as `/qq` lines; edit or delete lines and press Enter to queue them again
-- `/qq-clear` drops the queue
-- a queued message that starts with a slash command runs as that command: `/qq /compact keep the plan` compacts once everything queued before it has finished, and the next message waits for the compaction. A message led by anything else with a slash, such as a path, is refused; put other text first
-- an interrupted or failed turn, a failed command, or a compaction cancelled with Esc pauses the queue; `/qq` on its own resumes it
+- `>>edit` moves what is still queued back into the box as `>>` lines; edit or delete lines and press Enter to queue them again
+- `>>clear` drops the queue
+- a queued message that starts with a slash command runs as that command: `>> /compact keep the plan` compacts once everything queued before it has finished, and the next message waits for the compaction. A message led by anything else with a slash, such as a path, is refused; put other text first
+- an interrupted or failed turn, a failed command, or a compaction cancelled with Esc pauses the queue; `>>` on its own resumes it
 
-One prompt can carry several messages: each line that opens with `/qq` starts a new one, and other lines belong to the message above them. Text above the first `/qq` line is sent at once, as a plain Enter would send it: mid-turn it steers the running turn. A `/qq` line inside a code fence is text.
+One prompt can carry several messages: each line that opens with `>> ` starts a new one, and other lines belong to the message above them. Text above the first `>>` line is sent at once, as a plain Enter would send it: mid-turn it steers the running turn. A `>>` line inside a code fence is text, and `>>` must be followed by a space or the line's end.
 
 ```
 fix the failing tests
-/qq run lint after
-/qq /compact
-/qq summarise what changed
+>> run lint after
+>> /compact
+>> summarise what changed
 ```
+
+`>>` is not a slash command, so it stays out of the `/` typeahead. Claude Code notes each prompt the mod takes as "Prompt dropped by a hook".
 
 ## Install
 

@@ -1,7 +1,7 @@
 {
   "name": "msg-queue",
-  "version": "0.4.0",
-  "description": "/qq {message}: queue a message to send once the current turn has fully ended, each as a turn of its own",
+  "version": "0.5.0",
+  "description": ">> {message}: queue a message to send once the current turn has fully ended, each as a turn of its own",
   "types": "./types/index.d.ts",
   "author": {
     "name": "Roman"
