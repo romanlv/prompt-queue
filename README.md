@@ -1,27 +1,74 @@
 # msg-queue
 
-A Claude Code mod that holds messages until the running turn has fully ended, then sends each as a turn of its own.
+Line up messages for Claude while it works. Each one waits until the current task is completely finished, then goes in as a new task of its own.
 
-A plain Enter while Claude works steers the running turn: Claude Code hands the message in at the next tool call. `chat:queueSubmit` (`ctrl+x enter`) is documented to wait its turn but is absorbed mid-turn the same way ([#99416](https://github.com/anthropics/claude-code/issues/99416)). A prompt led by `>>` queues instead.
+## Why
 
-- `>> {message}` adds a message to the queue, mid-turn or not; with nothing running it sends at once
-- each turn that ends with an answer sends the next one, so every message runs as its own turn
-- the queue shows above the prompt; finished and running messages drop off
-- `>>` on its own, or `>>edit`, opens what is still waiting in the box as `>>` lines; sent and running messages are not in it. While the edit is open nothing is sent. Edit or delete lines and press Enter to save them in their place; empty the box to cancel and keep the queue as it was
-- `>>clear` drops the queue
-- a queued message that starts with a slash command runs as that command: `>> /compact keep the plan` compacts once everything queued before it has finished, and the next message waits for the compaction. A message led by anything else with a slash, such as a path, is refused; put other text first
-- an interrupted or failed turn, a failed command, or a compaction cancelled with Esc pauses the queue, an open edit included; `>>` on its own resumes it, and `>>edit` edits a paused queue
+While Claude is working, anything you type and send doesn't wait. Claude Code slips it into the task already running, the next time Claude pauses to use a tool. That is handy for steering ("use the other file"), but not when you mean "after that, do this next":
 
-One prompt can carry several messages: each line that opens with `>> ` starts a new one, and other lines belong to the message above them. Text above the first `>>` line is sent at once, as a plain Enter would send it: mid-turn it steers the running turn. A `>>` line inside a code fence is text, and `>>` must be followed by a space or the line's end.
+- the new request gets mixed into the current one, and Claude may switch to it halfway through
+- you can't line up a few steps and walk away
+- you end up watching for Claude to finish just to type the next thing
+
+Claude Code's own "queue" shortcut (`ctrl+x enter`) gets slipped in the same way ([#99416](https://github.com/anthropics/claude-code/issues/99416)).
+
+msg-queue gives you a real queue: start a line with `>>` and it waits its turn.
+
+## Quick start
+
+While Claude works, type:
 
 ```
-fix the failing tests
->> run lint after
->> /compact
+>> run the tests and fix anything that fails
+```
+
+Press Enter. The message appears in a small list above the prompt and is sent once Claude has finished the current task. If Claude isn't busy, it goes right away.
+
+## What you can do
+
+**Queue several steps at once.** Each line that starts with `>> ` is its own message, sent one after another, each as a separate task. Lines without `>>` belong to the message above them.
+
+```
+>> fix the failing tests
+   and keep the changes small
+>> update the changelog
 >> summarise what changed
 ```
 
-Each `>>` that will queue its line shows in colour as you type, so a plain one (mid-line, in a fence, or before a word) is easy to tell apart. `>>` is not a slash command, so it stays out of the `/` typeahead. Claude Code notes each prompt the mod takes as "Prompt dropped by a hook".
+**Say something now and queue the rest.** Text above the first `>>` line is sent straight away, like a normal message. Only the `>>` lines wait.
+
+```
+also check the README while you're at it
+>> then open a pull request
+```
+
+**Queue a command.** A queued message that is a slash command runs as that command when its turn comes. Handy for compacting between long tasks:
+
+```
+>> build the feature
+>> /compact
+>> write the docs for it
+```
+
+**See what's waiting.** The list above the prompt shows the queue. Messages leave it as soon as they are sent.
+
+**Change or remove queued messages.** Type `>>` on its own and press Enter. Everything still waiting comes back into the prompt box, one `>>` line each. Nothing is sent while you edit.
+
+- change a line, or delete the ones you no longer want, and press Enter to save
+- empty the box to cancel: the queue goes back exactly as it was
+
+Messages that were already sent are never in the edit.
+
+**Drop everything.** `>>clear` empties the queue.
+
+**Stop and start.** If you press Esc to interrupt Claude, or a task fails, the queue pauses so nothing runs on its own. Type `>>` on its own to carry on. `>>edit` lets you change a paused queue before you carry on.
+
+## Good to know
+
+- A `>>` that will queue its line is shown in colour as you type. One in the middle of a line, inside a code block (between ```` ``` ````), or stuck to a word (`>>like this`) is ordinary text and goes to Claude as written.
+- A queued line can't start with a `/` that isn't a command, such as a file path. You'll get a notice and the prompt comes back to fix. Put a word first: `>> read /tmp/log.txt`.
+- Claude Code shows "Prompt dropped by a hook" each time msg-queue takes a `>>` prompt. That's expected: the prompt went into the queue instead.
+- `>>` isn't a slash command, so it won't get in the way of `/` commands like `/q` in the typeahead.
 
 ## Install
 
@@ -30,12 +77,14 @@ claude plugin marketplace add romanlv/msg-queue
 claude plugin install msg-queue@msg-queue
 ```
 
-Tested with Claude Code 2.1.295. The mod API is early access and may change between releases.
+Tested with Claude Code 2.1.295. It is built on the Claude Code mod API, which is early access and may change between releases.
 
 ## Develop
 
+From the repository folder:
+
 ```sh
-claude --plugin-dir ~/dev/cc/msg-queue
+claude --plugin-dir .      # start Claude Code with this copy loaded
 claude plugin validate .
 claude plugin test .
 ```
