@@ -10,11 +10,14 @@ async function session($: Engine, on: On, initialBox = '') {
   const filled: string[] = []
   const ran: string[] = []
   const toasts: string[] = []
-  const commands = { fail: false, startsTurn: false, compact: 'stands' as 'stands' | 'skipped' }
+  const commands = { fail: false, startsTurn: false, refuseFill: false, compact: 'stands' as 'stands' | 'skipped' }
   // The bottom of the chain, standing in for the engine; another plugin drops DROPPED.
   on('prompt.submit', (_$, e) => {
     if (e.text === 'DROPPED') {
       return { drop: 'another plugin' } as never
+    }
+    if (e.text === 'THROWS') {
+      throw new Error('the engine failed')
     }
     entered.push(e.text)
     return { text: e.text }
@@ -22,6 +25,9 @@ async function session($: Engine, on: On, initialBox = '') {
   on('prompt.read', () => ({ value: { text: box, cursor: box.length } }) as never)
   const decorated: unknown[] = []
   on('prompt.fill', (_$, e) => {
+    if (commands.refuseFill) {
+      return { isFilled: false } as never
+    }
     box = e.mode === 'append' ? box + e.text : e.text
     filled.push(e.text)
     decorated.push(e.decorations)
@@ -85,7 +91,13 @@ async function session($: Engine, on: On, initialBox = '') {
     await clock.advance(300)
   }
   const boxText = () => box
-  return { entered, filled, decorated, ran, commands, toasts, type, setBox, boxText, turnStart, turnEnd }
+  // Changes the box and lets one poll see it, leaving the cancel check pending.
+  const setBoxQuietly = async (text: string) => {
+    box = text
+    await clock.advance(250)
+  }
+  const advance = (ms: number) => clock.advance(ms)
+  return { entered, filled, decorated, ran, commands, toasts, type, setBox, setBoxQuietly, advance, boxText, turnStart, turnEnd }
 }
 
 test('>> with nothing running sends at once', async ($, on) => {
@@ -540,4 +552,106 @@ test('what is waiting comes through a /clear, which starts the next session with
   await s.turnStart()
   await s.turnEnd()
   expect(s.entered).toEqual(['A', 'B'])
+})
+
+test('when the box will not take the queue, >>edit leaves it as it was', async ($, on) => {
+  const s = await session($, on)
+  await s.turnStart()
+  await s.type('>> A\n>> B')
+  s.commands.refuseFill = true
+  await s.type('>>edit')
+  expect(s.toasts.at(-1)).toBe('msg-queue: The prompt box could not take the queue, so it is unchanged')
+  await s.turnEnd()
+  await s.turnStart()
+  await s.turnEnd()
+  expect(s.entered).toEqual(['A', 'B'])
+})
+
+test('a send that fails pauses what was queued behind it, and >> resumes it', async ($, on) => {
+  const s = await session($, on)
+  await s.type('>> THROWS\n>> NEXT').catch(() => undefined)
+  expect(s.toasts.at(-1)).toContain('the prompt could not be sent')
+  expect(s.entered).toEqual([])
+  await s.type('>>')
+  expect(s.entered).toEqual(['NEXT'])
+})
+
+test('a typed command whose >> lines hold an unknown /word runs nothing and queues nothing', async ($, on) => {
+  const s = await session($, on)
+  const presentation = { isFullscreen: false, columns: 80 }
+  const out = await $.command.run({ command: 'compact', args: '\n>> /tmp/x.log explain', origin: { kind: 'composer' }, presentation } as never)
+  expect(out.text).toBe('/tmp/x.log is not a command, so nothing was queued; start the message with other text to send it')
+  expect(s.ran).toEqual([])
+})
+
+test('the >> lines below a typed command that starts a turn wait for that turn to end', async ($, on) => {
+  const s = await session($, on)
+  s.commands.startsTurn = true
+  const presentation = { isFullscreen: false, columns: 80 }
+  await $.command.run({ command: 'review', args: '>> AFTER', origin: { kind: 'composer' }, presentation } as never)
+  await s.turnStart()
+  expect(s.entered).toEqual([])
+  await s.turnEnd()
+  expect(s.entered).toEqual(['AFTER'])
+})
+
+test('the band shows the label, five messages, how many more, and long ones cut', async ($, on) => {
+  const s = await session($, on)
+  await s.turnStart()
+  const long = 'x'.repeat(100)
+  await s.type(['>> ' + long, '>> two\nsecond line', '>> 3', '>> 4', '>> 5', '>> 6', '>> 7'].join('\n'))
+  const band = await $.ui.mount({ plugin: 'msg-queue', surface: 'terminal', component: 'AbovePrompt', props: { hasSurvey: false, isWorking: true } as never })
+  expect(await band.find({ text: 'queued (7)' })).toBeDefined()
+  expect(await band.find({ text: `  1. ${'x'.repeat(72)}…` })).toBeDefined()
+  expect(await band.find({ text: '  2. two…' })).toBeDefined()
+  expect(await band.find({ text: '  6. 6' })).toBeUndefined()
+  expect(await band.find({ text: '  +2 more' })).toBeDefined()
+})
+
+test('the band says paused, and draws nothing of its own with nothing to show', async ($, on) => {
+  const s = await session($, on)
+  const band = await $.ui.mount({ plugin: 'msg-queue', surface: 'terminal', component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false } as never })
+  expect(await band.find({ text: /queued|paused/ })).toBeUndefined()
+  await s.turnStart()
+  await s.type('>> A')
+  await s.turnEnd('aborted')
+  expect(await band.find({ text: '⏸ paused (1)' })).toBeDefined()
+})
+
+test('a session that ends other than by /clear carries nothing over', async ($, on) => {
+  const s = await session($, on)
+  await s.turnStart()
+  await s.type('>> A')
+  await $.session.end({ reason: 'prompt_input_exit', sessionId: 'old', resume: { id: 'old' } } as never)
+  await s.type('>>clear')
+  await s.turnEnd()
+  await s.setBox('')
+  expect(s.entered).toEqual([])
+})
+
+test('a queue that came through a /clear is not doubled by the carried copy', async ($, on) => {
+  const s = await session($, on)
+  await s.turnStart()
+  await s.type('>> A\n>> B')
+  await $.session.end({ reason: 'clear', sessionId: 'old', resume: { id: 'old' } } as never)
+  await s.turnEnd()
+  await s.turnStart()
+  await s.turnEnd()
+  await s.turnStart()
+  await s.turnEnd()
+  expect(s.entered).toEqual(['A', 'B'])
+})
+
+test('Enter emptying the box just before a save does not count as a cancel', async ($, on) => {
+  const s = await session($, on)
+  await s.turnStart()
+  await s.type('>> A\n>> B')
+  await s.type('>>edit')
+  // The poll sees the box Enter has just emptied, then the save arrives.
+  await s.setBoxQuietly('')
+  await s.type('>> A-EDITED')
+  await s.advance(300)
+  expect(s.toasts.some(t => t.includes('Edit cancelled'))).toBe(false)
+  await s.turnEnd()
+  expect(s.entered).toEqual(['A-EDITED'])
 })

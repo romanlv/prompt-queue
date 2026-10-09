@@ -378,6 +378,9 @@ export const register: Register = on => {
     await (isEditing ? saveEdit($, later) : update($, queue, q => [...q, ...later]))
     const result = await next({ ...e, text: now }).catch(async (error: unknown) => {
       await update($, isBusy, () => false)
+      if ((await read($, queue)).length > 0) {
+        await pause($, `the prompt could not be sent (${String(error)})`)
+      }
       throw error
     })
     if ('drop' in result) {
