@@ -2,8 +2,6 @@
 
 A Claude Code plugin for queuing prompts while Claude works. Start a line with `>>` and the prompt waits until Claude has completely finished its current turn. Then it is sent as a new prompt, starting a new turn.
 
-![Claude builds a feature while an unrelated question is sent: without >> the question interrupts the build, with >> it waits until the build is done](docs/demo.gif)
-
 ## Why
 
 By default, a prompt you send while Claude is working **steers the current turn**. Claude Code hands it to Claude at the next pause between tool calls, and Claude works it into the task in progress. That's what you want for a correction ("use the other file"). It's not what you want for "when you're done, do this next":
@@ -22,6 +20,8 @@ prompt-queue adds a real queue:
 | `>> fix the typo too` | waits until the turn has fully ended, then runs as a turn of its own |
 
 When nothing is running and nothing is waiting, a `>>` prompt is sent right away like any other.
+
+![Claude runs three steps while 'run echo HELLO' is sent: without >> it runs between step 2 and 3, with >> it waits until all three are done](docs/demo.gif)
 
 ## Examples
 
