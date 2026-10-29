@@ -6,6 +6,7 @@ declare module 'claude-code' {
       isBusy: boolean
       isPaused: boolean
       held: string[] | null
+      waitingOn: string[]
     }
   }
 }

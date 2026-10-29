@@ -35,6 +35,10 @@ async function session($: Engine, on: On, initialBox = '') {
   })
   on('turn.start', (_$, e) => ({ turnId: e.turnId }))
   on('turn.complete', (_$, e) => ({ text: e.answer }))
+  // The session's agents as $.agent.list() gives them; a test sets their status.
+  const agents: { id: string; type: string; status: string; description: string }[] = []
+  on('agent.list', () => ({ value: agents }) as never)
+  on('classic.Stop', () => ({}) as never)
   on('command.list', () => ({ value: ['compact', 'review'].map(name => ({ name, description: '', source: 'builtin' })) }) as never)
   on('ui.toast', (_$, e) => {
     toasts.push(e.text)
@@ -96,8 +100,14 @@ async function session($: Engine, on: On, initialBox = '') {
     box = text
     await clock.advance(250)
   }
+  // A main turn that ends with background work in flight: the host's Stop lists it first.
+  const turnEndWith = async (...types: string[]) => {
+    const tasks = types.map((type, i) => ({ id: `b${i}`, type, status: 'running', description: type }))
+    await $.classic.Stop({ stop_hook_active: false, background_tasks: tasks, session_crons: [] } as never)
+    await turnEnd()
+  }
   const advance = (ms: number) => clock.advance(ms)
-  return { entered, filled, decorated, ran, commands, toasts, type, setBox, setBoxQuietly, advance, boxText, turnStart, turnEnd }
+  return { agents, turnEndWith, entered, filled, decorated, ran, commands, toasts, type, setBox, setBoxQuietly, advance, boxText, turnStart, turnEnd }
 }
 
 test('>> with nothing running sends at once', async ($, on) => {
@@ -138,6 +148,74 @@ test('a subagent finishing does not release the next message', async ($, on) => 
   await s.type('>> ONE')
   await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 's', reason: 'answer', agentId: 'a1' } as never)
   expect(s.entered).toEqual([])
+})
+
+test('a turn that ends with a background subagent running holds the queue until a later turn ends with none', async ($, on) => {
+  const s = await session($, on)
+  s.agents.push({ id: 'a1', type: 'general-purpose', status: 'running', description: 'sleep' })
+  await s.turnStart()
+  await s.type('>> NEXT')
+  await s.turnEndWith('subagent')
+  await s.advance(5000)
+  expect(s.entered).toEqual([])
+  // The subagent's notification wakes the main loop; that turn ends with nothing in flight.
+  s.agents[0]!.status = 'completed'
+  await s.turnStart()
+  await s.turnEndWith()
+  expect(s.entered).toEqual(['NEXT'])
+})
+
+test('a running workflow holds the queue too', async ($, on) => {
+  const s = await session($, on)
+  await s.turnStart()
+  await s.type('>> NEXT')
+  await s.turnEndWith('workflow')
+  await s.advance(5000)
+  expect(s.entered).toEqual([])
+  await s.turnStart()
+  await s.turnEndWith()
+  expect(s.entered).toEqual(['NEXT'])
+})
+
+test('a background shell or monitor does not hold the queue', async ($, on) => {
+  const s = await session($, on)
+  await s.turnStart()
+  await s.type('>> NEXT')
+  await s.turnEndWith('shell', 'monitor')
+  expect(s.entered).toEqual(['NEXT'])
+})
+
+test('a subagent that ends without waking the main loop releases the queue after a moment', async ($, on) => {
+  const s = await session($, on)
+  s.agents.push({ id: 'a1', type: 'general-purpose', status: 'running', description: 'sleep' })
+  await s.turnStart()
+  await s.type('>> NEXT')
+  await s.turnEndWith('subagent')
+  s.agents[0]!.status = 'killed'
+  await s.advance(500)
+  expect(s.entered).toEqual([])
+  await s.advance(1500)
+  expect(s.entered).toEqual(['NEXT'])
+})
+
+test('a subagent waiting on its own background work still holds the queue', async ($, on) => {
+  const s = await session($, on)
+  s.agents.push({ id: 'a1', type: 'general-purpose', status: 'waiting', description: 'sleep' })
+  await s.turnStart()
+  await s.type('>> NEXT')
+  await s.turnEndWith('subagent')
+  await s.advance(5000)
+  expect(s.entered).toEqual([])
+})
+
+test('the band says what the queue waits for', async ($, on) => {
+  const s = await session($, on)
+  s.agents.push({ id: 'a1', type: 'general-purpose', status: 'running', description: 'sleep' })
+  const band = await $.ui.mount({ plugin: 'prompt-queue', surface: 'terminal', component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false } as never })
+  await s.turnStart()
+  await s.type('>> NEXT')
+  await s.turnEndWith('subagent', 'subagent')
+  expect(await band.find({ text: /waiting for 2 background agents/ })).toBeDefined()
 })
 
 test('a multi-line message stays one; >> inside a line is text', async ($, on) => {

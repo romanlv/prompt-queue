@@ -10,6 +10,16 @@ const isPaused = atom({ plugin: 'prompt-queue', key: 'isPaused' } as const, fals
 // The messages >>edit put in the box, held out of the queue until Enter saves the box's
 // version or emptying the box removes them; null when no edit is open.
 const held = atom({ plugin: 'prompt-queue', key: 'held' } as const, null as string[] | null)
+// The background work the main turn ended with, each a task's type, which wakes the main
+// loop with its result: the queue waits for a turn that ends without it. Empty otherwise.
+const waitingOn = atom({ plugin: 'prompt-queue', key: 'waitingOn' } as const, [] as string[])
+
+// Background work that answers to the main loop. A shell or a monitor may run for good (a
+// dev server), so the queue does not wait for those.
+const BLOCKING = ['subagent', 'workflow']
+const ACTIVE = ['pending', 'running', 'waiting']
+// How long no subagent may be active, with no turn begun, before the queue stops waiting.
+const GRACE_POLLS = 4
 
 // Each line opening with >> starts a queued message, and the lines below belong to it;
 // >>edit and >>clear are whole prompts of their own.
@@ -75,6 +85,39 @@ function preview(message: string): string {
 
 let isRemovePending = false
 let poll: Timer | undefined
+// The blocking work the host's Stop listed, just before the main turn's end reads it.
+let inFlight: string[] = []
+let idlePolls = 0
+
+function waitsFor(types: string[]): string {
+  const count = (type: string, noun: string) => {
+    const n = types.filter(t => t === type).length
+    return n === 0 ? [] : [`${n} ${noun}${n === 1 ? '' : 's'}`]
+  }
+
+  return [...count('subagent', 'background agent'), ...count('workflow', 'workflow')].join(' and ')
+}
+
+// A subagent can end without waking the main loop (stopped from /tasks): once none has been
+// active for a moment and no turn has begun, the queue goes on. A workflow is not listed
+// as an agent, so one in flight is waited for.
+async function releaseIfDone($: EngineInterface) {
+  const types = await read($, waitingOn)
+  if (types.length === 0 || types.includes('workflow')) {
+    idlePolls = 0
+    return
+  }
+  const agents = await $.agent.list()
+  const isActive = agents.some(a => a.teammateId === undefined && ACTIVE.includes(a.status))
+  idlePolls = isActive ? 0 : idlePolls + 1
+  if (idlePolls < GRACE_POLLS) {
+    return
+  }
+  idlePolls = 0
+  await update($, waitingOn, () => [])
+  await update($, isBusy, () => false)
+  sendLater($)
+}
 
 async function syncDraft($: EngineInterface) {
   await restoreCarried($)
@@ -319,7 +362,10 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     // The box changes without an edit event (Enter clears it, Up recalls), so it is polled.
     poll?.cancel()
-    poll = $.clock.every(250, () => syncDraft($))
+    poll = $.clock.every(250, async () => {
+      await syncDraft($)
+      await releaseIfDone($)
+    })
     // A reload keeps the queue; anything left waiting with nothing running goes on.
     sendLater($)
 
@@ -463,8 +509,19 @@ export const register: Register = on => {
     }
   })
 
+  on('classic.Stop', async ($, e, next) => {
+    inFlight = (e.background_tasks ?? []).map(t => t.type).filter(type => BLOCKING.includes(type))
+
+    return next(e)
+  })
+
   on('turn.start', async ($, e, next) => {
     turnsStarted++
+    if (e.agentId === undefined) {
+      // A main turn, such as one a subagent's result wakes, ends in a fresh look at what runs.
+      idlePolls = 0
+      await update($, waitingOn, () => [])
+    }
     await update($, isBusy, () => true)
 
     return next(e)
@@ -473,6 +530,14 @@ export const register: Register = on => {
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
     if (e.agentId === undefined) {
+      const blocking = e.reason === 'answer' ? inFlight : []
+      inFlight = []
+      if (blocking.length > 0) {
+        // Waiting for background work is not the turn's end: its result wakes another turn.
+        await update($, waitingOn, () => blocking)
+
+        return result
+      }
       await update($, isBusy, () => false)
       const waiting = (await read($, queue)).length + ((await read($, held))?.length ?? 0)
       if (e.reason !== 'answer' && waiting > 0) {
@@ -492,11 +557,12 @@ export const register: Register = on => {
     const isDrafting = await read($, isDraft)
     const paused = await read($, isPaused)
     const editing = await read($, held)
+    const background = await read($, waitingOn)
     if (items.length === 0 && !isDrafting && editing === null) {
       return next(e)
     }
     const { Box, Text } = $.ui.resolve(e)
-    const waits = e.props.isWorking || items.length > 0 || paused
+    const waits = e.props.isWorking || items.length > 0 || paused || background.length > 0
 
     return (
       <Box flexDirection="column">
@@ -511,6 +577,7 @@ export const register: Register = on => {
               {paused ? `⏸ paused (${items.length})` : `queued (${items.length})`}
             </Text>
             <Text dimColor>{paused ? ': >> resumes · >>edit · >>clear' : ': >> edits · >>clear'}</Text>
+            {background.length > 0 && <Text dimColor>{` · waiting for ${waitsFor(background)}`}</Text>}
           </Text>
         )}
         {items.slice(0, SHOWN).map((m, i) => (
