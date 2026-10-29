@@ -60,7 +60,7 @@ also check the README while you're at it
 >> write the docs for it
 ```
 
-Two other forms work the same way:
+Commands and `>>` lines also combine in two other ways:
 
 - A command typed with `>>` lines below it runs now, and the lines wait for it to finish (`/compact`, then `>> carry on`).
 - A queue survives `/clear`, so `>> /clear` followed by `>> start the next task` gives the next task a fresh conversation.
@@ -69,7 +69,7 @@ Two other forms work the same way:
 
 | Type | What it does |
 | --- | --- |
-| `>>` | Edit what's waiting. Every queued prompt comes back into the box, one `>>` line each. Change or delete lines and press Enter to save; Enter on its own keeps the queue as it was. Empty the box to remove them all. Prompts already sent are never in the edit. |
+| `>>` | Edit what's waiting. Every queued prompt comes back into the box, one `>>` line each. Change, add or delete lines and press Enter to save; Enter without changes keeps the queue as it was. Empty the box to remove them all. Nothing is sent while the edit is open, and prompts already sent are never in it. |
 | `>>clear` | Drop everything that's waiting. |
 
 **Pausing.** If you press Esc to interrupt Claude, or a turn fails, the queue pauses so nothing runs on its own. While it's paused, `>>` resumes it and `>>edit` opens the edit.
