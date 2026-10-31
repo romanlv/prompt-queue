@@ -39,6 +39,9 @@ async function session($: Engine, on: On, initialBox = '') {
   const agents: { id: string; type: string; status: string; description: string }[] = []
   on('agent.list', () => ({ value: agents }) as never)
   on('classic.Stop', () => ({}) as never)
+  // The tool's own answer: a test sets what the next call returns.
+  const tools = { answer: { result: 'ok', text: 'ok' } as Record<string, unknown> }
+  on('tool.call', () => tools.answer as never)
   on('command.list', () => ({ value: ['compact', 'review'].map(name => ({ name, description: '', source: 'builtin' })) }) as never)
   on('ui.toast', (_$, e) => {
     toasts.push(e.text)
@@ -106,8 +109,13 @@ async function session($: Engine, on: On, initialBox = '') {
     await $.classic.Stop({ stop_hook_active: false, background_tasks: tasks, session_crons: [] } as never)
     await turnEnd()
   }
+  // A tool the main loop calls mid-turn, answered as tools.answer says.
+  const toolCall = async (tool: string, answer: Record<string, unknown>) => {
+    tools.answer = answer
+    await $.tool.call({ tool, tool_use_id: 'u1' } as never)
+  }
   const advance = (ms: number) => clock.advance(ms)
-  return { agents, turnEndWith, entered, filled, decorated, ran, commands, toasts, type, setBox, setBoxQuietly, advance, boxText, turnStart, turnEnd }
+  return { toolCall, agents, turnEndWith, entered, filled, decorated, ran, commands, toasts, type, setBox, setBoxQuietly, advance, boxText, turnStart, turnEnd }
 }
 
 test('>> with nothing running sends at once', async ($, on) => {
@@ -216,6 +224,69 @@ test('the band says what the queue waits for', async ($, on) => {
   await s.type('>> NEXT')
   await s.turnEndWith('subagent', 'subagent')
   expect(await band.find({ text: /waiting for 2 background agents/ })).toBeDefined()
+})
+
+const DECLINED = {
+  result: "Error: The user doesn't want to proceed with this tool use. The tool use was rejected. STOP what you are doing and wait for the user to tell you how to proceed.",
+  text: "The user doesn't want to proceed with this tool use. The tool use was rejected. STOP what you are doing and wait for the user to tell you how to proceed.",
+  isError: true,
+}
+
+test('a question the person answers is part of the turn; the queue goes when it ends', async ($, on) => {
+  const s = await session($, on)
+  await s.turnStart()
+  await s.type('>> NEXT')
+  await s.toolCall('AskUserQuestion', { result: { answers: { 'Red or blue?': 'Red' } }, text: 'User has answered' })
+  await s.turnEnd()
+  expect(s.entered).toEqual(['NEXT'])
+})
+
+test('a question left unanswered holds the queue until the turn of the reply ends', async ($, on) => {
+  const s = await session($, on)
+  await s.turnStart()
+  await s.type('>> NEXT')
+  await s.toolCall('AskUserQuestion', DECLINED)
+  await s.turnEnd()
+  await s.advance(5000)
+  expect(s.entered).toEqual([])
+  await s.type('blue, and why ask?')
+  await s.turnStart()
+  await s.turnEnd()
+  expect(s.entered).toEqual(['blue, and why ask?', 'NEXT'])
+})
+
+test('a tool call the person rejected holds the queue the same way', async ($, on) => {
+  const s = await session($, on)
+  await s.turnStart()
+  await s.type('>> NEXT')
+  await s.toolCall('Bash', DECLINED)
+  await s.turnEnd()
+  await s.advance(5000)
+  expect(s.entered).toEqual([])
+  await s.turnStart()
+  await s.turnEnd()
+  expect(s.entered).toEqual(['NEXT'])
+})
+
+test('a tool that fails on its own does not hold the queue', async ($, on) => {
+  const s = await session($, on)
+  await s.turnStart()
+  await s.type('>> NEXT')
+  await s.toolCall('Bash', { result: 'Error: exit 1', text: 'exit 1', isError: true })
+  await s.turnEnd()
+  expect(s.entered).toEqual(['NEXT'])
+})
+
+test('>> sends on a queue held for an answer, and the band says it waits for one', async ($, on) => {
+  const s = await session($, on)
+  const band = await $.ui.mount({ plugin: 'prompt-queue', surface: 'terminal', component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false } as never })
+  await s.turnStart()
+  await s.type('>> NEXT')
+  await s.toolCall('AskUserQuestion', DECLINED)
+  await s.turnEnd()
+  expect(await band.find({ text: /waiting for your answer/ })).toBeDefined()
+  await s.type('>>')
+  expect(s.entered).toEqual(['NEXT'])
 })
 
 test('a multi-line message stays one; >> inside a line is text', async ($, on) => {

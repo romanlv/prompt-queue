@@ -10,8 +10,9 @@ const isPaused = atom({ plugin: 'prompt-queue', key: 'isPaused' } as const, fals
 // The messages >>edit put in the box, held out of the queue until Enter saves the box's
 // version or emptying the box removes them; null when no edit is open.
 const held = atom({ plugin: 'prompt-queue', key: 'held' } as const, null as string[] | null)
-// The background work the main turn ended with, each a task's type, which wakes the main
-// loop with its result: the queue waits for a turn that ends without it. Empty otherwise.
+// What the main turn ended waiting on: each background task's type, whose result wakes the
+// main loop, or 'answer' when it stopped for the person. The queue waits for the next turn
+// to end without any. Empty otherwise.
 const waitingOn = atom({ plugin: 'prompt-queue', key: 'waitingOn' } as const, [] as string[])
 
 // Background work that answers to the main loop. A shell or a monitor may run for good (a
@@ -20,6 +21,9 @@ const BLOCKING = ['subagent', 'workflow']
 const ACTIVE = ['pending', 'running', 'waiting']
 // How long no subagent may be active, with no turn begun, before the queue stops waiting.
 const GRACE_POLLS = 4
+// What core answers a tool call the person turned down, a question they left unanswered
+// included: the model is told to stop and wait for them.
+const REJECTED = /^(?:Error: )?The user doesn't want to proceed with this tool use/
 
 // Each line opening with >> starts a queued message, and the lines below belong to it;
 // >>edit and >>clear are whole prompts of their own.
@@ -88,6 +92,8 @@ let poll: Timer | undefined
 // The blocking work the host's Stop listed, just before the main turn's end reads it.
 let inFlight: string[] = []
 let idlePolls = 0
+// Set when the person turned down a tool call of the main turn now running.
+let isRejected = false
 
 function waitsFor(types: string[]): string {
   const count = (type: string, noun: string) => {
@@ -95,15 +101,17 @@ function waitsFor(types: string[]): string {
     return n === 0 ? [] : [`${n} ${noun}${n === 1 ? '' : 's'}`]
   }
 
-  return [...count('subagent', 'background agent'), ...count('workflow', 'workflow')].join(' and ')
+  const work = [...count('subagent', 'background agent'), ...count('workflow', 'workflow')].join(' and ')
+
+  return types.includes('answer') ? 'your answer, >> sends on' : work
 }
 
 // A subagent can end without waking the main loop (stopped from /tasks): once none has been
 // active for a moment and no turn has begun, the queue goes on. A workflow is not listed
-// as an agent, so one in flight is waited for.
+// as an agent, so one in flight is waited for, as is the person's answer.
 async function releaseIfDone($: EngineInterface) {
   const types = await read($, waitingOn)
-  if (types.length === 0 || types.includes('workflow')) {
+  if (types.length === 0 || types.some(t => t !== 'subagent')) {
     idlePolls = 0
     return
   }
@@ -273,6 +281,13 @@ async function runCommand($: EngineInterface, run: { command: string; args: stri
 
 // A bare >> resumes a paused queue, opens a waiting one for editing, and otherwise shows usage.
 async function resume($: EngineInterface) {
+  if ((await read($, waitingOn)).includes('answer')) {
+    await update($, waitingOn, () => [])
+    await update($, isBusy, () => false)
+    sendLater($)
+
+    return 'Sending on without waiting for an answer'
+  }
   if (!(await read($, isPaused))) {
     const isWaiting = (await read($, queue)).length > 0 || (await read($, held)) !== null
 
@@ -515,11 +530,22 @@ export const register: Register = on => {
     return next(e)
   })
 
+  // A tool call the person turned down ends the turn with the agent waiting on them.
+  on('tool.call', async ($, e, next) => {
+    const result = await next(e)
+    if (e.agentId === undefined && result.isError === true && REJECTED.test(result.text ?? '')) {
+      isRejected = true
+    }
+
+    return result
+  })
+
   on('turn.start', async ($, e, next) => {
     turnsStarted++
     if (e.agentId === undefined) {
       // A main turn, such as one a subagent's result wakes, ends in a fresh look at what runs.
       idlePolls = 0
+      isRejected = false
       await update($, waitingOn, () => [])
     }
     await update($, isBusy, () => true)
@@ -530,10 +556,13 @@ export const register: Register = on => {
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
     if (e.agentId === undefined) {
-      const blocking = e.reason === 'answer' ? inFlight : []
+      // An interrupted turn pauses the queue instead.
+      const blocking = e.reason === 'answer' ? [...inFlight, ...(isRejected ? ['answer'] : [])] : []
       inFlight = []
+      isRejected = false
       if (blocking.length > 0) {
         // Waiting for background work is not the turn's end: its result wakes another turn.
+        // Nor is waiting for the person: their reply starts one.
         await update($, waitingOn, () => blocking)
 
         return result
